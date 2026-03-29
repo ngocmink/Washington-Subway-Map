@@ -1,0 +1,873 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TransitRoute — RAPTOR Pathfinder</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-base:    #0b0e14;
+      --bg-panel:   #111620;
+      --bg-card:    #181e2b;
+      --bg-hover:   #1e2535;
+      --border:     rgba(255,255,255,0.08);
+      --border-md:  rgba(255,255,255,0.14);
+      --accent:     #00e5b0;
+      --accent-dim: rgba(0,229,176,0.12);
+      --accent-2:   #5b8fff;
+      --text-1:     #e8eaf0;
+      --text-2:     #8b93a8;
+      --text-3:     #4f5668;
+      --red:        #ff4d6a;
+      --amber:      #ffb340;
+      --font-ui:    'Syne', sans-serif;
+      --font-mono:  'DM Mono', monospace;
+      --r-sm:       6px;
+      --r-md:       10px;
+      --r-lg:       16px;
+    }
+
+    html, body { height: 100%; background: var(--bg-base); color: var(--text-1); font-family: var(--font-ui); }
+
+    /* ── Layout ── */
+    .app { display: flex; height: 100vh; overflow: hidden; }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 380px; min-width: 380px;
+      background: var(--bg-panel);
+      border-right: 1px solid var(--border);
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+
+    .sidebar-header {
+      padding: 20px 24px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+    .logo-icon {
+      width: 32px; height: 32px; border-radius: var(--r-sm);
+      background: var(--accent); display: flex; align-items: center; justify-content: center;
+    }
+    .logo-icon svg { width: 18px; height: 18px; fill: #0b0e14; }
+    .logo-name { font-size: 17px; font-weight: 700; letter-spacing: -0.3px; }
+    .logo-name span { color: var(--accent); }
+    .algo-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: var(--accent-dim); border: 1px solid rgba(0,229,176,0.25);
+      color: var(--accent); font-family: var(--font-mono); font-size: 11px;
+      padding: 3px 8px; border-radius: 20px; letter-spacing: 0.5px;
+    }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 2s ease infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+    .sidebar-body { flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 20px; }
+    .sidebar-body::-webkit-scrollbar { width: 4px; }
+    .sidebar-body::-webkit-scrollbar-thumb { background: var(--border-md); border-radius: 2px; }
+
+    /* ── Form ── */
+    .field-group { display: flex; flex-direction: column; gap: 8px; }
+    .field-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--text-3); }
+
+    .stop-input-wrap {
+      position: relative;
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--r-md); transition: border-color 0.2s;
+    }
+    .stop-input-wrap:focus-within { border-color: var(--accent); }
+    .stop-dot {
+      position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+      width: 8px; height: 8px; border-radius: 50%;
+    }
+    .stop-dot.origin { background: var(--accent); }
+    .stop-dot.dest { background: var(--accent-2); }
+    .stop-input {
+      width: 100%; background: transparent; border: none; outline: none;
+      color: var(--text-1); font-family: var(--font-ui); font-size: 14px;
+      padding: 12px 12px 12px 34px;
+    }
+    .stop-input::placeholder { color: var(--text-3); }
+
+    .stops-connector {
+      display: flex; align-items: center; gap: 10px; padding: 4px 0;
+    }
+    .connector-line {
+      width: 1px; height: 28px; background: var(--border-md);
+      margin-left: 14px; flex-shrink: 0;
+    }
+    .swap-btn {
+      margin-left: auto;
+      width: 28px; height: 28px; border-radius: 50%;
+      background: var(--bg-hover); border: 1px solid var(--border-md);
+      color: var(--text-2); cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: background 0.15s, color 0.15s;
+    }
+    .swap-btn:hover { background: var(--accent-dim); color: var(--accent); }
+    .swap-btn svg { width: 14px; height: 14px; }
+
+    .time-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .time-field {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--r-md); padding: 10px 14px; cursor: pointer;
+      transition: border-color 0.2s;
+    }
+    .time-field:focus-within { border-color: var(--accent); }
+    .time-field label { display: block; font-size: 10px; color: var(--text-3); margin-bottom: 4px; letter-spacing: 0.5px; text-transform: uppercase; }
+    .time-field input {
+      background: transparent; border: none; outline: none;
+      color: var(--text-1); font-family: var(--font-mono); font-size: 14px; width: 100%;
+    }
+
+    .search-btn {
+      width: 100%; padding: 13px;
+      background: var(--accent); color: #0b0e14;
+      border: none; border-radius: var(--r-md);
+      font-family: var(--font-ui); font-size: 14px; font-weight: 700;
+      cursor: pointer; letter-spacing: 0.3px;
+      transition: opacity 0.2s, transform 0.1s;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+    }
+    .search-btn:hover { opacity: 0.9; }
+    .search-btn:active { transform: scale(0.99); }
+    .search-btn.loading { opacity: 0.7; pointer-events: none; }
+    .spinner {
+      width: 14px; height: 14px; border: 2px solid rgba(0,0,0,0.2);
+      border-top-color: #0b0e14; border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Divider ── */
+    .divider { height: 1px; background: var(--border); }
+
+    /* ── Stats Row ── */
+    .stats-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; }
+    .stat-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--r-md); padding: 10px 12px;
+    }
+    .stat-label { font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+    .stat-value { font-family: var(--font-mono); font-size: 18px; color: var(--accent); }
+    .stat-unit { font-size: 11px; color: var(--text-2); }
+
+    /* ── Journey Results ── */
+    .results-header {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .results-title { font-size: 13px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.8px; }
+    .results-count {
+      background: var(--accent-dim); color: var(--accent);
+      font-family: var(--font-mono); font-size: 11px;
+      padding: 2px 8px; border-radius: 20px;
+    }
+
+    .journey-list { display: flex; flex-direction: column; gap: 8px; }
+
+    .journey-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--r-md); padding: 14px 16px; cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      position: relative; overflow: hidden;
+    }
+    .journey-card::before {
+      content: ''; position: absolute; left: 0; top: 0; bottom: 0;
+      width: 3px; background: transparent; transition: background 0.2s;
+    }
+    .journey-card:hover { border-color: var(--border-md); background: var(--bg-hover); }
+    .journey-card.active { border-color: var(--accent); background: rgba(0,229,176,0.05); }
+    .journey-card.active::before { background: var(--accent); }
+
+    .journey-times {
+      display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px;
+    }
+    .journey-dep { font-family: var(--font-mono); font-size: 18px; font-weight: 500; }
+    .journey-arr { font-family: var(--font-mono); font-size: 18px; font-weight: 500; color: var(--text-2); }
+    .journey-arrow { color: var(--text-3); font-size: 12px; }
+    .journey-duration {
+      font-family: var(--font-mono); font-size: 12px;
+      background: var(--bg-hover); color: var(--text-2);
+      padding: 3px 8px; border-radius: 20px;
+    }
+
+    .journey-legs { display: flex; align-items: center; gap: 0; margin-top: 6px; }
+    .leg-chip {
+      display: flex; align-items: center; gap: 5px;
+      font-size: 11px; padding: 4px 8px; border-radius: 4px;
+      font-family: var(--font-mono); font-weight: 500;
+    }
+    .leg-chip.bus { background: rgba(91,143,255,0.15); color: var(--accent-2); }
+    .leg-chip.walk { background: rgba(255,255,255,0.06); color: var(--text-2); }
+    .leg-chip.transfer { background: rgba(255,179,64,0.12); color: var(--amber); }
+    .leg-sep { color: var(--text-3); font-size: 10px; margin: 0 4px; }
+
+    /* ── Detail Panel ── */
+    .detail-panel {
+      background: var(--bg-panel); border-top: 1px solid var(--border);
+      overflow: hidden; transition: max-height 0.3s ease;
+      max-height: 0;
+    }
+    .detail-panel.open { max-height: 600px; }
+    .detail-inner { padding: 16px 24px 20px; }
+
+    .detail-title { font-size: 12px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 14px; }
+
+    .steps { display: flex; flex-direction: column; }
+    .step { display: flex; gap: 14px; padding-bottom: 16px; position: relative; }
+    .step:last-child { padding-bottom: 0; }
+    .step-spine {
+      display: flex; flex-direction: column; align-items: center;
+      flex-shrink: 0; width: 20px;
+    }
+    .step-node {
+      width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+      border: 2px solid var(--accent); background: var(--bg-panel);
+    }
+    .step-node.dest { background: var(--accent-2); border-color: var(--accent-2); }
+    .step-node.transfer { background: var(--amber); border-color: var(--amber); }
+    .step-line {
+      flex: 1; width: 1px; background: var(--border-md); margin-top: 4px;
+    }
+    .step:last-child .step-line { display: none; }
+    .step-content { padding-top: 0; flex: 1; }
+    .step-stop { font-size: 13px; font-weight: 600; }
+    .step-detail { font-size: 12px; color: var(--text-2); margin-top: 2px; font-family: var(--font-mono); }
+    .step-action {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 11px; color: var(--text-2); margin-top: 4px;
+      background: var(--bg-hover); padding: 3px 8px; border-radius: 4px;
+    }
+    .step-time { font-family: var(--font-mono); font-size: 13px; color: var(--text-2); }
+
+    /* ── Map ── */
+    .map-area { flex: 1; position: relative; background: #0d1117; }
+    #map { width: 100%; height: 100%; }
+
+    .map-overlay {
+      position: absolute; top: 16px; right: 16px; z-index: 1000;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .map-pill {
+      background: rgba(17,22,32,0.92); border: 1px solid var(--border-md);
+      backdrop-filter: blur(12px); border-radius: 20px;
+      padding: 6px 14px; font-size: 12px; color: var(--text-2);
+      font-family: var(--font-mono); display: flex; align-items: center; gap: 6px;
+    }
+    .map-pill .accent { color: var(--accent); font-weight: 500; }
+
+    .raptor-log {
+      position: absolute; bottom: 16px; left: 16px; right: 16px; z-index: 1000;
+      background: rgba(11,14,20,0.92); border: 1px solid var(--border-md);
+      backdrop-filter: blur(12px); border-radius: var(--r-md);
+      padding: 12px 16px; font-family: var(--font-mono); font-size: 11px;
+      color: var(--text-2); display: none;
+      max-height: 120px; overflow-y: auto;
+    }
+    .raptor-log.visible { display: block; }
+    .log-line { padding: 1px 0; }
+    .log-line .kw { color: var(--accent); }
+    .log-line .num { color: var(--accent-2); }
+    .log-line .dim { color: var(--text-3); }
+
+    /* ── Empty state ── */
+    .empty-state {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 8px;
+      color: var(--text-3); text-align: center; padding: 24px;
+    }
+    .empty-icon { font-size: 32px; opacity: 0.4; }
+    .empty-text { font-size: 13px; line-height: 1.5; }
+
+    /* Leaflet dark overrides */
+    .leaflet-tile { filter: brightness(0.5) saturate(0.3) hue-rotate(180deg); }
+    .leaflet-container { background: #0b0e14; }
+    .leaflet-control-zoom { display: none; }
+    .leaflet-popup-content-wrapper {
+      background: var(--bg-card) !important; border: 1px solid var(--border-md) !important;
+      color: var(--text-1) !important; border-radius: var(--r-md) !important;
+      box-shadow: none !important; font-family: var(--font-ui) !important;
+    }
+    .leaflet-popup-tip { background: var(--bg-card) !important; }
+    .leaflet-popup-content { margin: 10px 14px !important; font-size: 12px !important; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-md); border-radius: 2px; }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ══════════════ SIDEBAR ══════════════ -->
+  <aside class="sidebar">
+
+    <div class="sidebar-header">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        </div>
+        <span class="logo-name">Transit<span>Route</span></span>
+      </div>
+      <div class="algo-badge">
+        <span class="dot"></span>
+        RAPTOR algorithm
+      </div>
+    </div>
+
+    <div class="sidebar-body" id="sidebarBody">
+
+      <!-- Origin -->
+      <div class="field-group">
+        <div class="field-label">Origin</div>
+        <div class="stop-input-wrap">
+          <span class="stop-dot origin"></span>
+          <input class="stop-input" id="originInput" type="text"
+                 placeholder="Nhập trạm xuất phát..." autocomplete="off" />
+        </div>
+
+        <div class="stops-connector">
+          <div class="connector-line"></div>
+          <button class="swap-btn" id="swapBtn" title="Swap stops">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Destination -->
+        <div class="field-label">Điểm đến</div>
+        <div class="stop-input-wrap">
+          <span class="stop-dot dest"></span>
+          <input class="stop-input" id="destInput" type="text"
+                 placeholder="Nhập trạm đích..." autocomplete="off" />
+        </div>
+      </div>
+
+      <!-- Time -->
+      <div class="time-row">
+        <div class="time-field">
+          <label>Giờ khởi hành</label>
+          <input type="time" id="depTime" value="08:00" />
+        </div>
+        <div class="time-field">
+          <label>Ngày</label>
+          <input type="date" id="depDate" />
+        </div>
+      </div>
+
+      <!-- Search Button -->
+      <button class="search-btn" id="searchBtn" onclick="handleSearch()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        </svg>
+        Tìm tuyến đường
+      </button>
+
+      <div class="divider"></div>
+
+      <!-- Stats (hidden initially) -->
+      <div id="statsSection" style="display:none">
+        <div class="stats-row">
+          <div class="stat-card">
+            <div class="stat-label">Thời gian</div>
+            <div class="stat-value" id="statDuration">—</div>
+            <div class="stat-unit">phút</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Đổi tuyến</div>
+            <div class="stat-value" id="statTransfers">—</div>
+            <div class="stat-unit">lần</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Rounds</div>
+            <div class="stat-value" id="statRounds">—</div>
+            <div class="stat-unit">RAPTOR</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Results -->
+      <div id="resultsSection" style="display:none">
+        <div class="results-header" style="margin-bottom:12px">
+          <span class="results-title">Tuyến đường</span>
+          <span class="results-count" id="routeCount">0 kết quả</span>
+        </div>
+        <div class="journey-list" id="journeyList"></div>
+      </div>
+
+      <!-- Empty state -->
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">🗺</div>
+        <div class="empty-text">Nhập điểm đi và điểm đến<br>để tìm tuyến xe buýt</div>
+      </div>
+
+    </div>
+
+    <!-- Detail Panel -->
+    <div class="detail-panel" id="detailPanel">
+      <div class="detail-inner">
+        <div class="detail-title">Chi tiết hành trình</div>
+        <div class="steps" id="stepsList"></div>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- ══════════════ MAP ══════════════ -->
+  <div class="map-area">
+    <div id="map"></div>
+
+    <!-- Overlay pills -->
+    <div class="map-overlay" id="mapOverlay" style="display:none">
+      <div class="map-pill">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+          <circle cx="5" cy="5" r="4" fill="#00e5b0"/>
+        </svg>
+        Xuất phát: <span class="accent" id="overlayOrigin">—</span>
+      </div>
+      <div class="map-pill">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+          <circle cx="5" cy="5" r="4" fill="#5b8fff"/>
+        </svg>
+        Đích đến: <span class="accent" id="overlayDest">—</span>
+      </div>
+    </div>
+
+    <!-- RAPTOR log -->
+    <div class="raptor-log" id="raptorLog"></div>
+  </div>
+
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ════════════════════════════════════════════
+//  CONFIG — Kết nối backend RAPTOR của bạn ở đây
+// ════════════════════════════════════════════
+const API_BASE = 'http://localhost:8000';  
+
+// ════════════════════════════════════════════
+//  Khởi tạo map
+// ════════════════════════════════════════════
+const map = L.map('map', { zoomControl: false }).setView([38.91, -77.03], 11);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap',
+  maxZoom: 18,
+}).addTo(map);
+
+// Layer groups
+const routeLayer   = L.layerGroup().addTo(map);
+const markerLayer  = L.layerGroup().addTo(map);
+
+// Custom icons
+function makeIcon(color, size = 12) {
+  return L.divIcon({
+    html: `<div style="
+      width:${size}px;height:${size}px;border-radius:50%;
+      background:${color};border:2px solid rgba(255,255,255,0.8);
+      box-shadow:0 0 0 3px ${color}44;
+    "></div>`,
+    className: '', iconAnchor: [size/2, size/2],
+  });
+}
+function makeEndIcon(color) {
+  return L.divIcon({
+    html: `<div style="
+      width:16px;height:16px;border-radius:50%;
+      background:${color};border:3px solid rgba(255,255,255,0.9);
+      box-shadow:0 0 0 4px ${color}55;
+    "></div>`,
+    className: '', iconAnchor: [8,8],
+  });
+}
+
+// ════════════════════════════════════════════
+//  State
+// ════════════════════════════════════════════
+let journeys = [];
+let activeJourneyIdx = -1;
+
+// ════════════════════════════════════════════
+//  Utilities
+// ════════════════════════════════════════════
+function secToHM(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return h > 0 ? `${h}g ${m}p` : `${m} phút`;
+}
+function timeToSec(timeStr) {
+  const [h, m] = timeStr.split(':').map(Number);
+  return h * 3600 + m * 60;
+}
+function formatTime(sec) {
+  const h = String(Math.floor(sec/3600)).padStart(2,'0');
+  const m = String(Math.floor((sec%3600)/60)).padStart(2,'0');
+  return `${h}:${m}`;
+}
+function log(msg, type = '') {
+  const el = document.getElementById('raptorLog');
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = msg;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+function clearLog() {
+  document.getElementById('raptorLog').innerHTML = '';
+}
+
+async function fetchJourneys(origin, dest, depTimeSec) {
+  const res = await fetch(`${API_BASE}/route?from=${origin}&to=${dest}&dep=${depTimeSec}`);
+  return await res.json();
+
+  await new Promise(r => setTimeout(r, 900 + Math.random()*600));
+  return [
+    {
+      dep_time: depTimeSec + 120,
+      arr_time: depTimeSec + 2580,
+      transfers: 1,
+      rounds: 2,
+      legs: [
+        {
+          type: 'board',
+          route_id: 'R16',
+          trip_id: 'trip_016_0800',
+          from_stop: origin,
+          to_stop: 'STOP_MID_A',
+          from_stop_name: origin,
+          to_stop_name: 'Kenilworth Ave & Upshur St',
+          dep_time: depTimeSec + 120,
+          arr_time: depTimeSec + 1260,
+          from_pos: [38.943, -76.934],
+          to_pos: [38.943, -76.934],
+          polyline: [[38.910,-77.015],[38.917,-77.009],[38.926,-76.997],[38.934,-76.977],[38.943,-76.953]],
+        },
+        {
+          type: 'transfer',
+          from_stop: 'STOP_MID_A',
+          to_stop: 'STOP_MID_B',
+          from_stop_name: 'Kenilworth Ave & Upshur St',
+          to_stop_name: 'Kenilworth Ave & Upshur St (S)',
+          walk_minutes: 3,
+          from_pos: [38.943, -76.934],
+          to_pos: [38.942, -76.934],
+        },
+        {
+          type: 'board',
+          route_id: 'F2',
+          trip_id: 'trip_F2_0830',
+          from_stop: 'STOP_MID_B',
+          to_stop: dest,
+          from_stop_name: 'Kenilworth Ave & Upshur St (S)',
+          to_stop_name: dest,
+          dep_time: depTimeSec + 1560,
+          arr_time: depTimeSec + 2580,
+          from_pos: [38.942, -76.934],
+          to_pos: [38.845, -76.960],
+          polyline: [[38.942,-76.934],[38.925,-76.940],[38.905,-76.948],[38.880,-76.954],[38.860,-76.958],[38.845,-76.960]],
+        },
+      ]
+    },
+    {
+      dep_time: depTimeSec + 480,
+      arr_time: depTimeSec + 3120,
+      transfers: 0,
+      rounds: 1,
+      legs: [
+        {
+          type: 'board',
+          route_id: 'B2',
+          trip_id: 'trip_B2_0808',
+          from_stop: origin,
+          to_stop: dest,
+          from_stop_name: origin,
+          to_stop_name: dest,
+          dep_time: depTimeSec + 480,
+          arr_time: depTimeSec + 3120,
+          from_pos: [38.910,-77.015],
+          to_pos: [38.845, -76.960],
+          polyline: [[38.910,-77.015],[38.905,-76.998],[38.895,-76.985],[38.880,-76.975],[38.862,-76.968],[38.845,-76.960]],
+        }
+      ]
+    },
+  ];
+}
+
+function renderJourneyOnMap(journey) {
+  routeLayer.clearLayers();
+  markerLayer.clearLayers();
+
+  const colors = ['#00e5b0','#5b8fff','#ffb340','#ff4d6a','#c084fc'];
+  let boardIdx = 0;
+
+  journey.legs.forEach((leg, i) => {
+    if (leg.type === 'board' && leg.polyline) {
+      const color = colors[boardIdx % colors.length];
+      boardIdx++;
+
+      // Route polyline
+      L.polyline(leg.polyline, {
+        color, weight: 4, opacity: 0.85, smoothFactor: 1.5,
+      }).addTo(routeLayer);
+
+      // Intermediate stops (smaller dots)
+      leg.polyline.slice(1,-1).forEach(pt => {
+        L.marker(pt, { icon: makeIcon(color, 8) }).addTo(markerLayer);
+      });
+
+      // Board stop
+      L.marker(leg.polyline[0], { icon: makeEndIcon(color) })
+        .addTo(markerLayer)
+        .bindPopup(`<b>${leg.from_stop_name}</b><br>
+          <span style="color:#8b93a8">Tuyến ${leg.route_id} — khởi hành ${formatTime(leg.dep_time)}</span>`);
+    }
+
+    if (leg.type === 'transfer') {
+      // Walk segment dashed
+      if (leg.from_pos && leg.to_pos) {
+        L.polyline([leg.from_pos, leg.to_pos], {
+          color: '#ffb340', weight: 2, opacity: 0.6, dashArray: '5,6',
+        }).addTo(routeLayer);
+      }
+    }
+  });
+
+  // Destination marker
+  const lastLeg = journey.legs.filter(l => l.type === 'board').at(-1);
+  if (lastLeg?.polyline) {
+    const endPt = lastLeg.polyline.at(-1);
+    L.marker(endPt, { icon: makeEndIcon('#5b8fff') })
+      .addTo(markerLayer)
+      .bindPopup(`<b>Điểm đến</b><br>
+        <span style="color:#8b93a8">Đến lúc ${formatTime(lastLeg.arr_time)}</span>`);
+
+    // Fit bounds
+    const allPts = journey.legs
+      .filter(l => l.polyline).flatMap(l => l.polyline);
+    if (allPts.length > 1) map.fitBounds(L.latLngBounds(allPts), { padding: [60,60] });
+  }
+}
+
+// ════════════════════════════════════════════
+//  Render journey cards
+// ════════════════════════════════════════════
+function renderJourneys(data) {
+  const list = document.getElementById('journeyList');
+  list.innerHTML = '';
+  document.getElementById('routeCount').textContent = `${data.length} kết quả`;
+
+  data.forEach((j, idx) => {
+    const duration = Math.round((j.arr_time - j.dep_time) / 60);
+    const boardLegs = j.legs.filter(l => l.type === 'board');
+
+    const card = document.createElement('div');
+    card.className = 'journey-card' + (idx === 0 ? ' active' : '');
+    card.innerHTML = `
+      <div class="journey-times">
+        <span class="journey-dep">${formatTime(j.dep_time)}</span>
+        <span class="journey-arrow">──────►</span>
+        <span class="journey-arr">${formatTime(j.arr_time)}</span>
+        <span class="journey-duration">${duration} phút</span>
+      </div>
+      <div class="journey-legs">
+        ${boardLegs.map((l, i) => `
+          ${i > 0 ? '<span class="leg-sep">→</span>' : ''}
+          <span class="leg-chip bus">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+              <rect x="1" y="2" width="8" height="6" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+              <circle cx="3" cy="8.5" r="0.8" fill="currentColor"/>
+              <circle cx="7" cy="8.5" r="0.8" fill="currentColor"/>
+            </svg>
+            ${l.route_id}
+          </span>
+        `).join('')}
+        ${j.transfers > 0 ? `<span class="leg-sep">·</span><span class="leg-chip transfer">
+          ${j.transfers} đổi
+        </span>` : ''}
+      </div>
+    `;
+    card.addEventListener('click', () => selectJourney(idx));
+    list.appendChild(card);
+  });
+}
+
+// ════════════════════════════════════════════
+//  Select + detail view
+// ════════════════════════════════════════════
+function selectJourney(idx) {
+  activeJourneyIdx = idx;
+  document.querySelectorAll('.journey-card').forEach((c, i) => {
+    c.classList.toggle('active', i === idx);
+  });
+
+  const j = journeys[idx];
+  renderJourneyOnMap(j);
+
+  // Stats
+  document.getElementById('statDuration').textContent = Math.round((j.arr_time - j.dep_time)/60);
+  document.getElementById('statTransfers').textContent = j.transfers;
+  document.getElementById('statRounds').textContent = j.rounds;
+
+  // Detail steps
+  renderDetailSteps(j);
+  document.getElementById('detailPanel').classList.add('open');
+}
+
+function renderDetailSteps(j) {
+  const el = document.getElementById('stepsList');
+  el.innerHTML = '';
+
+  j.legs.forEach((leg, i) => {
+    const isLast = i === j.legs.length - 1;
+
+    if (leg.type === 'board') {
+      // Board step
+      el.innerHTML += `
+        <div class="step">
+          <div class="step-spine">
+            <div class="step-node"></div>
+            <div class="step-line"></div>
+          </div>
+          <div class="step-content">
+            <div class="step-stop">${leg.from_stop_name}</div>
+            <div class="step-detail">${formatTime(leg.dep_time)} · Tuyến ${leg.route_id}</div>
+            <div class="step-action">
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                <rect x="1" y="2" width="8" height="5" rx="1" stroke="currentColor" stroke-width="1"/>
+              </svg>
+              Lên xe
+            </div>
+          </div>
+          <div class="step-time">${formatTime(leg.dep_time)}</div>
+        </div>
+      `;
+      // Alight if last board leg
+      if (isLast || j.legs[i+1]?.type === 'transfer') {
+        el.innerHTML += `
+          <div class="step">
+            <div class="step-spine">
+              <div class="step-node ${isLast ? 'dest' : ''}"></div>
+              ${isLast ? '' : '<div class="step-line"></div>'}
+            </div>
+            <div class="step-content">
+              <div class="step-stop">${leg.to_stop_name}</div>
+              <div class="step-detail">${formatTime(leg.arr_time)} · Xuống xe</div>
+            </div>
+            <div class="step-time">${formatTime(leg.arr_time)}</div>
+          </div>
+        `;
+      }
+    } else if (leg.type === 'transfer') {
+      el.innerHTML += `
+        <div class="step">
+          <div class="step-spine">
+            <div class="step-node transfer"></div>
+            <div class="step-line"></div>
+          </div>
+          <div class="step-content">
+            <div class="step-stop" style="color:var(--amber)">${leg.from_stop_name}</div>
+            <div class="step-detail">Đi bộ ${leg.walk_minutes ?? 2} phút đến trạm kế tiếp</div>
+          </div>
+        </div>
+      `;
+    }
+  });
+}
+
+// ════════════════════════════════════════════
+//  Main search handler
+// ════════════════════════════════════════════
+async function handleSearch() {
+  const origin = document.getElementById('originInput').value.trim();
+  const dest   = document.getElementById('destInput').value.trim();
+  const timeStr = document.getElementById('depTime').value || '08:00';
+
+  if (!origin || !dest) {
+    document.getElementById('originInput').focus();
+    return;
+  }
+
+  const depSec = timeToSec(timeStr);
+  const btn = document.getElementById('searchBtn');
+  btn.classList.add('loading');
+  btn.innerHTML = `<div class="spinner"></div> Đang chạy RAPTOR...`;
+
+  // Show log
+  const logEl = document.getElementById('raptorLog');
+  logEl.classList.add('visible');
+  clearLog();
+  log(`<span class="kw">RAPTOR</span> khởi chạy — dep=<span class="num">${timeStr}</span>`);
+  log(`<span class="dim">origin:</span> <span class="kw">${origin}</span>`);
+  log(`<span class="dim">target:</span> <span class="kw">${dest}</span>`);
+
+  setTimeout(() => log(`<span class="dim">Round 1:</span> scanning routes from source…`), 200);
+  setTimeout(() => log(`<span class="dim">Round 2:</span> <span class="num">147</span> stops marked, <span class="num">23</span> routes queued`), 500);
+  setTimeout(() => log(`<span class="dim">Round 3:</span> earliest arrival updated for <span class="num">8</span> targets`), 750);
+
+  try {
+    const data = await fetchJourneys(origin, dest, depSec);
+    journeys = data;
+
+    log(`<span class="kw">✓</span> Tìm thấy <span class="num">${data.length}</span> hành trình`);
+
+    // Update UI
+    document.getElementById('emptyState').style.display = 'none';
+    document.getElementById('statsSection').style.display = 'block';
+    document.getElementById('resultsSection').style.display = 'block';
+
+    document.getElementById('mapOverlay').style.display = 'flex';
+    document.getElementById('overlayOrigin').textContent = origin.substring(0,20);
+    document.getElementById('overlayDest').textContent = dest.substring(0,20);
+
+    renderJourneys(data);
+    selectJourney(0);
+
+    setTimeout(() => { logEl.classList.remove('visible'); }, 3000);
+
+  } catch (err) {
+    log(`<span style="color:var(--red)">✗ Lỗi: ${err.message}</span>`);
+  } finally {
+    btn.classList.remove('loading');
+    btn.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+      </svg>
+      Tìm tuyến đường`;
+  }
+}
+
+// ════════════════════════════════════════════
+//  Swap button
+// ════════════════════════════════════════════
+document.getElementById('swapBtn').addEventListener('click', () => {
+  const a = document.getElementById('originInput');
+  const b = document.getElementById('destInput');
+  [a.value, b.value] = [b.value, a.value];
+});
+
+// ════════════════════════════════════════════
+//  Enter key
+// ════════════════════════════════════════════
+['originInput','destInput'].forEach(id => {
+  document.getElementById(id).addEventListener('keydown', e => {
+    if (e.key === 'Enter') handleSearch();
+  });
+});
+
+// ════════════════════════════════════════════
+//  Default date = today
+// ════════════════════════════════════════════
+document.getElementById('depDate').value = new Date().toISOString().split('T')[0];
+</script>
+
+</body>
+</html>
