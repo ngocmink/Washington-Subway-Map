@@ -148,13 +148,15 @@ class MetroGraphBuilder:
                     self.graph.add_node(
                         route_node,
                         name = stop_id_to_name.get(stop_id),
-                        type='route_stop', 
+                        type='route_stop',
+                        station_id=stop_id,
+                        next_node=nodes_in_trip[i+1] if i < len(nodes_in_trip) - 1 else None,
                         route=route_id, 
                         arr_time=[to_seconds(rows.loc[i, 'arrival_time'])], 
                         sv_id=trip_to_sv[trip_id]
                     )
-                    self.graph.add_edge(route_node, hub_id, weight=self.transfer_penalty, label='exit_to_hub')
-                    self.graph.add_edge(hub_id, route_node, weight=self.transfer_penalty, label='enter_from_hub')
+                    self.graph.add_edge(route_node, hub_id, weight=self.transfer_penalty, label='route_hub')
+                    self.graph.add_edge(hub_id, route_node, weight=self.transfer_penalty, label='route_hub')
                 else:
                     new_arr_time = to_seconds(rows.loc[i, 'arrival_time'])
                     self.graph.nodes[route_node]['arr_time'].append(new_arr_time)
