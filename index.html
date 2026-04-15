@@ -7,7 +7,7 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -286,7 +286,7 @@
     .empty-text { font-size: 13px; line-height: 1.5; }
 
     /* Leaflet dark overrides */
-    .leaflet-tile { filter: none; }
+    .leaflet-tile { filter: brightness(0.85) saturate(0.7); }
     .leaflet-container { background: #0b0e14; }
     .leaflet-control-zoom { display: none; }
     .leaflet-popup-content-wrapper {
@@ -373,6 +373,33 @@
 
       <div class="divider"></div>
 
+      <!-- WMATA API Key -->
+      <div class="field-group">
+        <div class="field-label">WMATA API Key</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <div class="stop-input-wrap" style="flex:1">
+            <input class="stop-input" id="wmataKeyInput" type="password"
+                   placeholder="Nhập API key của bạn..."
+                   style="padding-left:14px" autocomplete="off"/>
+          </div>
+          <button id="wmataLoadBtn" onclick="loadFromWmataApi()"
+            style="flex-shrink:0;padding:10px 14px;background:var(--bg-card);
+                   border:1px solid var(--border-md);border-radius:var(--r-md);
+                   color:var(--accent);font-family:var(--font-ui);font-size:12px;
+                   font-weight:600;cursor:pointer;white-space:nowrap;
+                   transition:background 0.15s">
+            Tải data
+          </button>
+        </div>
+        <div id="wmataStatus" style="font-size:11px;color:var(--text-3);font-family:var(--font-mono);min-height:16px">
+          Dùng <a href="https://developer.wmata.com" target="_blank"
+            style="color:var(--accent);text-decoration:none">developer.wmata.com</a>
+          để lấy key miễn phí hoặc copy dòng này : 1f14c00ecf8d46ab9e5de37fb9a0350b
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
       <!-- Stats (hidden initially) -->
       <div id="statsSection" style="display:none">
         <div class="stats-row">
@@ -447,7 +474,7 @@
 
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 // ════════════════════════════════════════════
 //  CONFIG — Kết nối backend RAPTOR của bạn ở đây
@@ -459,14 +486,362 @@ const API_BASE = 'http://localhost:8000';
 // ════════════════════════════════════════════
 const map = L.map('map', { zoomControl: false }).setView([38.91, -77.03], 11);
 
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  attribution: '© OpenStreetMap',
-  maxZoom: 18,
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+  subdomains: 'abcd',
+  maxZoom: 19,
 }).addTo(map);
 
 // Layer groups
 const routeLayer   = L.layerGroup().addTo(map);
 const markerLayer  = L.layerGroup().addTo(map);
+const metroLayer   = L.layerGroup().addTo(map);
+
+// ════════════════════════════════════════════
+//  WMATA Line Colors
+// ════════════════════════════════════════════
+function getWmataColor(route_id) {
+  const lineColors = {
+    'RED':    '#BF0D3E',
+    'BLUE':   '#009CDE',
+    'ORANGE': '#ED8B00',
+    'SILVER': '#A2ACAB',
+    'YELLOW': '#FFD100',
+    'GREEN':  '#00B140',
+  };
+  const key = (route_id || '').toUpperCase();
+  return lineColors[key] || '#5b8fff';
+}
+
+// ════════════════════════════════════════════
+//  WMATA API — fetch live data
+// ════════════════════════════════════════════
+
+// WMATA line code → tên hiển thị
+const WMATA_LINE_META = {
+  'RD': 'RED', 'BL': 'BLUE', 'OR': 'ORANGE',
+  'SV': 'SILVER', 'GR': 'GREEN', 'YL': 'YELLOW',
+};
+
+async function loadFromWmataApi() {
+  const apiKey = document.getElementById('wmataKeyInput').value.trim();
+  if (!apiKey) {
+    setWmataStatus('⚠ Vui lòng nhập API key', 'var(--amber)');
+    return;
+  }
+
+  const btn = document.getElementById('wmataLoadBtn');
+  btn.textContent = '…';
+  btn.style.pointerEvents = 'none';
+  metroLayer.clearLayers();
+
+  try {
+    const headers = { 'api_key': apiKey };
+
+    // ── Step 1: jLines → lấy terminal station codes thật của từng tuyến ──
+    setWmataStatus('Bước 1/3 — Lấy danh sách tuyến…', 'var(--text-2)');
+    const linesRes = await fetch('https://api.wmata.com/Rail.svc/json/jLines', { headers });
+    if (linesRes.status === 401) throw new Error('API key không hợp lệ (401)');
+    if (!linesRes.ok) throw new Error(`WMATA jLines lỗi: ${linesRes.status}`);
+    const { Lines } = await linesRes.json();
+
+    // Lines[i] = { LineCode, DisplayName, StartStationCode, EndStationCode }
+    console.log('[WMATA] Lines:', Lines.map(l =>
+      `${l.LineCode}: ${l.StartStationCode} → ${l.EndStationCode}`
+    ));
+
+    // ── Step 2: jStations → tọa độ + tên tất cả ga ──
+    setWmataStatus('Bước 2/3 — Lấy tọa độ ga…', 'var(--text-2)');
+    const stRes = await fetch('https://api.wmata.com/Rail.svc/json/jStations', { headers });
+    if (!stRes.ok) throw new Error(`WMATA jStations lỗi: ${stRes.status}`);
+    const { Stations } = await stRes.json();
+
+    // Build stationByCode map
+    const stationByCode = {};
+    Stations.forEach(s => {
+      const lines = [s.LineCode1, s.LineCode2, s.LineCode3, s.LineCode4]
+        .filter(Boolean)
+        .map(c => WMATA_LINE_META[c])
+        .filter(Boolean);
+      stationByCode[s.Code] = { id: s.Code, name: s.Name, lat: s.Lat, lng: s.Lon, lines };
+    });
+    console.log(`[WMATA] ${Stations.length} stations loaded`);
+
+    // ── Step 3: sắp xếp ga bằng nearest-neighbor traversal ──
+    // Bỏ hoàn toàn jPath (không đáng tin với shared-track lines).
+    // Nearest-neighbor: bắt đầu từ ga đầu cuối (xa trung tâm nhất),
+    // mỗi bước chọn ga gần nhất chưa đi qua → cho ra thứ tự địa lý đúng.
+    setWmataStatus(`Bước 3/3 — Sắp xếp ${Lines.length} tuyến…`, 'var(--text-2)');
+    const lineRoutes = {};
+    const lineErrors = [];
+
+    for (let i = 0; i < Lines.length; i++) {
+      const line  = Lines[i];
+      const lineName = WMATA_LINE_META[line.LineCode];
+      if (!lineName) continue;
+
+      setWmataStatus(`Bước 3/3 — Tuyến ${lineName} (${i+1}/${Lines.length})…`, 'var(--text-2)');
+
+      try {
+        const r = await fetch(
+          `https://api.wmata.com/Rail.svc/json/jStations?LineCode=${line.LineCode}`,
+          { headers }
+        );
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const { Stations: ls } = await r.json();
+        if (!ls?.length) throw new Error('Không có ga');
+
+        // Build lookup code → station
+        const stMap = {};
+        ls.forEach(s => { stMap[s.Code] = s; });
+
+        // --- Nearest-neighbor greedy traversal ---
+        // 1. Tìm centroid
+        const centLat = ls.reduce((s, x) => s + x.Lat, 0) / ls.length;
+        const centLon = ls.reduce((s, x) => s + x.Lon, 0) / ls.length;
+
+        // 2. Chọn điểm bắt đầu = ga xa centroid nhất (đầu cuối)
+        const start = ls.reduce((best, s) => {
+          const d  = Math.hypot(s.Lat - centLat, s.Lon - centLon);
+          const bd = Math.hypot(best.Lat - centLat, best.Lon - centLon);
+          return d > bd ? s : best;
+        });
+
+        // 3. Greedy nearest-neighbor
+        const unvisited = new Map(ls.map(s => [s.Code, s]));
+        const route = [];
+        let cur = start;
+
+        while (unvisited.size > 0) {
+          unvisited.delete(cur.Code);
+          route.push(cur.Code);
+          if (!unvisited.size) break;
+
+          let nearest = null, minD = Infinity;
+          for (const [, s] of unvisited) {
+            const d = Math.hypot(s.Lat - cur.Lat, s.Lon - cur.Lon);
+            if (d < minD) { minD = d; nearest = s; }
+          }
+          cur = nearest;
+        }
+
+        lineRoutes[lineName] = route;
+
+        const nm = c => stMap[c]?.Name || c;
+        const head = route.slice(0,3).map(nm).join(' → ');
+        const tail = route.slice(-3).map(nm).join(' → ');
+        console.log(`[WMATA] ${lineName}: ${route.length} stops | ${head} … ${tail}`);
+
+      } catch (e) {
+        lineErrors.push(lineName);
+        console.error(`[WMATA] ${lineName} lỗi:`, e.message);
+      }
+    }
+
+    // ── Cập nhật state và vẽ map ──
+    window.stationById = stationByCode;
+    drawMetroNetwork(Object.values(stationByCode), lineRoutes, stationByCode);
+
+    const ok  = Object.keys(lineRoutes).length;
+    const err = lineErrors.length;
+    if (err > 0) {
+      setWmataStatus(
+        `✓ ${Stations.length} ga · ${ok} tuyến OK · ⚠ ${err} lỗi (${lineErrors.join(', ')})`,
+        'var(--amber)'
+      );
+    } else {
+      setWmataStatus(`✓ ${Stations.length} ga · ${ok} tuyến · data live từ WMATA`, 'var(--accent)');
+    }
+
+  } catch (err) {
+    setWmataStatus(`✗ ${err.message}`, 'var(--red)');
+    console.error('[WMATA] Fatal:', err);
+  } finally {
+    btn.textContent = 'Tải data';
+    btn.style.pointerEvents = '';
+  }
+}
+
+
+function setWmataStatus(msg, color) {
+  const el = document.getElementById('wmataStatus');
+  el.style.color = color;
+  el.textContent = msg;
+}
+
+// ════════════════════════════════════════════
+//  FALLBACK — Hardcoded DC metro data
+//  (dùng khi chưa có API key)
+// ════════════════════════════════════════════
+const METRO_STATIONS = [
+  // RED
+  { id:'shady_grove',        name:'Shady Grove',           lat:39.1199,lng:-77.1646,lines:['RED'] },
+  { id:'rockville',          name:'Rockville',             lat:39.0845,lng:-77.1527,lines:['RED'] },
+  { id:'twinbrook',          name:'Twinbrook',             lat:39.0627,lng:-77.1214,lines:['RED'] },
+  { id:'white_flint',        name:'White Flint',           lat:39.0488,lng:-77.1128,lines:['RED'] },
+  { id:'grosvenor',          name:'Grosvenor-Strathmore',  lat:39.0291,lng:-77.1066,lines:['RED'] },
+  { id:'medical_center',     name:'Medical Center',        lat:38.9999,lng:-77.0967,lines:['RED'] },
+  { id:'bethesda',           name:'Bethesda',              lat:38.9845,lng:-77.0994,lines:['RED'] },
+  { id:'friendship_heights', name:'Friendship Heights',    lat:38.9600,lng:-77.0858,lines:['RED'] },
+  { id:'tenleytown',         name:'Tenleytown-AU',         lat:38.9479,lng:-77.0795,lines:['RED'] },
+  { id:'van_ness',           name:'Van Ness-UDC',          lat:38.9422,lng:-77.0635,lines:['RED'] },
+  { id:'cleveland_park',     name:'Cleveland Park',        lat:38.9340,lng:-77.0588,lines:['RED'] },
+  { id:'woodley_park',       name:'Woodley Park',          lat:38.9243,lng:-77.0527,lines:['RED'] },
+  { id:'dupont_circle',      name:'Dupont Circle',         lat:38.9096,lng:-77.0434,lines:['RED'] },
+  { id:'farragut_north',     name:'Farragut North',        lat:38.9036,lng:-77.0396,lines:['RED'] },
+  { id:'metro_center',       name:'Metro Center',          lat:38.8983,lng:-77.0280,lines:['RED','BLUE','ORANGE','SILVER'] },
+  { id:'gallery_place',      name:'Gallery Place',         lat:38.8982,lng:-77.0218,lines:['RED','GREEN','YELLOW'] },
+  { id:'judiciary_sq',       name:'Judiciary Square',      lat:38.8966,lng:-77.0166,lines:['RED'] },
+  { id:'union_station',      name:'Union Station',         lat:38.8975,lng:-77.0065,lines:['RED'] },
+  { id:'noma',               name:'NoMa-Gallaudet',        lat:38.9076,lng:-77.0035,lines:['RED'] },
+  { id:'rhode_island',       name:'Rhode Island Ave',      lat:38.9202,lng:-76.9953,lines:['RED'] },
+  { id:'brookland',          name:'Brookland-CUA',         lat:38.9340,lng:-76.9947,lines:['RED'] },
+  { id:'fort_totten',        name:'Fort Totten',           lat:38.9516,lng:-77.0022,lines:['RED','GREEN','YELLOW'] },
+  { id:'takoma',             name:'Takoma',                lat:38.9759,lng:-77.0138,lines:['RED'] },
+  { id:'silver_spring',      name:'Silver Spring',         lat:38.9940,lng:-77.0312,lines:['RED'] },
+  { id:'forest_glen',        name:'Forest Glen',           lat:39.0148,lng:-77.0530,lines:['RED'] },
+  { id:'wheaton',            name:'Wheaton',               lat:39.0396,lng:-77.0575,lines:['RED'] },
+  { id:'glenmont',           name:'Glenmont',              lat:39.0619,lng:-77.0519,lines:['RED'] },
+  // BLUE
+  { id:'franconia',          name:'Franconia-Springfield', lat:38.7657,lng:-77.1683,lines:['BLUE'] },
+  { id:'van_dorn',           name:'Van Dorn Street',       lat:38.7960,lng:-77.1284,lines:['BLUE'] },
+  { id:'king_street',        name:'King Street-Old Town',  lat:38.8065,lng:-77.0612,lines:['BLUE','YELLOW'] },
+  { id:'braddock_road',      name:'Braddock Road',         lat:38.8143,lng:-77.0536,lines:['BLUE','YELLOW'] },
+  { id:'reagan_national',    name:'Reagan National Airport',lat:38.8532,lng:-77.0476,lines:['BLUE','YELLOW'] },
+  { id:'crystal_city',       name:'Crystal City',          lat:38.8577,lng:-77.0513,lines:['BLUE','YELLOW'] },
+  { id:'pentagon_city',      name:'Pentagon City',         lat:38.8628,lng:-77.0592,lines:['BLUE','YELLOW'] },
+  { id:'pentagon',           name:'Pentagon',              lat:38.8692,lng:-77.0545,lines:['BLUE','YELLOW'] },
+  { id:'arlington_cemetery', name:'Arlington Cemetery',    lat:38.8840,lng:-77.0699,lines:['BLUE'] },
+  { id:'rosslyn',            name:'Rosslyn',               lat:38.8965,lng:-77.0709,lines:['BLUE','ORANGE','SILVER'] },
+  { id:'foggy_bottom',       name:'Foggy Bottom-GWU',      lat:38.9001,lng:-77.0501,lines:['BLUE','ORANGE','SILVER'] },
+  { id:'farragut_west',      name:'Farragut West',         lat:38.9013,lng:-77.0405,lines:['BLUE','ORANGE','SILVER'] },
+  { id:'federal_triangle',   name:'Federal Triangle',      lat:38.8933,lng:-77.0280,lines:['BLUE','ORANGE','SILVER'] },
+  { id:'smithsonian',        name:'Smithsonian',           lat:38.8884,lng:-77.0282,lines:['BLUE','ORANGE','SILVER'] },
+  { id:'lenfant_plaza',      name:"L'Enfant Plaza",        lat:38.8847,lng:-77.0218,lines:['BLUE','ORANGE','SILVER','GREEN','YELLOW'] },
+  { id:'federal_center',     name:'Federal Center SW',     lat:38.8849,lng:-77.0159,lines:['BLUE','ORANGE','SILVER'] },
+  { id:'capitol_south',      name:'Capitol South',         lat:38.8849,lng:-77.0059,lines:['BLUE','ORANGE','SILVER'] },
+  { id:'eastern_market',     name:'Eastern Market',        lat:38.8842,lng:-76.9975,lines:['BLUE','ORANGE','SILVER'] },
+  { id:'potomac_ave',        name:'Potomac Ave',           lat:38.8820,lng:-76.9865,lines:['BLUE','ORANGE','SILVER'] },
+  { id:'stadium_armory',     name:'Stadium-Armory',        lat:38.8857,lng:-76.9786,lines:['BLUE','ORANGE','SILVER'] },
+  { id:'benning_road',       name:'Benning Road',          lat:38.8962,lng:-76.9386,lines:['BLUE','ORANGE','SILVER'] },
+  { id:'capitol_heights',    name:'Capitol Heights',       lat:38.8888,lng:-76.9137,lines:['BLUE','ORANGE','SILVER'] },
+  { id:'addison_road',       name:'Addison Road',          lat:38.8844,lng:-76.8934,lines:['BLUE','ORANGE','SILVER'] },
+  { id:'morgan_blvd',        name:'Morgan Blvd',           lat:38.8931,lng:-76.8746,lines:['BLUE','ORANGE','SILVER'] },
+  { id:'largo',              name:'Largo Town Center',     lat:38.9002,lng:-76.8461,lines:['BLUE','SILVER'] },
+  // ORANGE
+  { id:'vienna',             name:'Vienna/Fairfax',        lat:38.8777,lng:-77.2716,lines:['ORANGE'] },
+  { id:'dunn_loring',        name:'Dunn Loring',           lat:38.8820,lng:-77.2289,lines:['ORANGE'] },
+  { id:'west_falls_church',  name:'West Falls Church',     lat:38.9003,lng:-77.1882,lines:['ORANGE'] },
+  { id:'east_falls_church',  name:'East Falls Church',     lat:38.8857,lng:-77.1568,lines:['ORANGE','SILVER'] },
+  // SILVER
+  { id:'ashburn',            name:'Ashburn',               lat:39.0226,lng:-77.5007,lines:['SILVER'] },
+  { id:'loudoun_gateway',    name:'Loudoun Gateway',       lat:39.0075,lng:-77.4694,lines:['SILVER'] },
+  { id:'dulles',             name:'Washington Dulles Intl',lat:38.9535,lng:-77.4543,lines:['SILVER'] },
+  { id:'innovation_center',  name:'Innovation Center',     lat:38.9740,lng:-77.4271,lines:['SILVER'] },
+  { id:'herndon',            name:'Herndon',               lat:38.9720,lng:-77.3860,lines:['SILVER'] },
+  { id:'reston_town',        name:'Reston Town Center',    lat:38.9596,lng:-77.3593,lines:['SILVER'] },
+  { id:'wiehle',             name:'Wiehle-Reston East',    lat:38.9478,lng:-77.3410,lines:['SILVER'] },
+  { id:'spring_hill',        name:'Spring Hill',           lat:38.9293,lng:-77.2567,lines:['SILVER'] },
+  { id:'greensboro',         name:'Greensboro',            lat:38.9146,lng:-77.2381,lines:['SILVER'] },
+  { id:'tysons_corner',      name:'Tysons Corner',         lat:38.9207,lng:-77.2218,lines:['SILVER'] },
+  { id:'mclean',             name:'McLean',                lat:38.9340,lng:-77.1772,lines:['SILVER'] },
+  // GREEN
+  { id:'greenbelt',          name:'Greenbelt',             lat:39.0083,lng:-76.9114,lines:['GREEN'] },
+  { id:'college_park',       name:'College Park',          lat:38.9780,lng:-76.9280,lines:['GREEN'] },
+  { id:'prince_georges',     name:"Prince George's Plaza", lat:38.9606,lng:-76.9340,lines:['GREEN'] },
+  { id:'west_hyattsville',   name:'West Hyattsville',      lat:38.9541,lng:-76.9599,lines:['GREEN'] },
+  { id:'hyattsville',        name:'Hyattsville Crossing',  lat:38.9493,lng:-76.9710,lines:['GREEN'] },
+  { id:'columbia_heights',   name:'Columbia Heights',      lat:38.9282,lng:-77.0323,lines:['GREEN','YELLOW'] },
+  { id:'u_street',           name:'U Street/Cardozo',      lat:38.9169,lng:-77.0290,lines:['GREEN','YELLOW'] },
+  { id:'shaw',               name:'Shaw-Howard Univ',      lat:38.9127,lng:-77.0222,lines:['GREEN','YELLOW'] },
+  { id:'mt_vernon',          name:'Mt Vernon Sq',          lat:38.9049,lng:-77.0222,lines:['GREEN','YELLOW'] },
+  { id:'archives',           name:'Archives-Navy Memorial',lat:38.8933,lng:-77.0218,lines:['GREEN','YELLOW'] },
+  { id:'waterfront',         name:'Waterfront',            lat:38.8764,lng:-77.0166,lines:['GREEN'] },
+  { id:'navy_yard',          name:'Navy Yard-Ballpark',    lat:38.8764,lng:-77.0067,lines:['GREEN'] },
+  { id:'anacostia',          name:'Anacostia',             lat:38.8626,lng:-76.9953,lines:['GREEN'] },
+  { id:'congress_heights',   name:'Congress Heights',      lat:38.8460,lng:-76.9892,lines:['GREEN'] },
+  { id:'southern_ave',       name:'Southern Ave',          lat:38.8408,lng:-76.9757,lines:['GREEN'] },
+  { id:'naylor_road',        name:'Naylor Road',           lat:38.8449,lng:-76.9567,lines:['GREEN'] },
+  { id:'suitland',           name:'Suitland',              lat:38.8433,lng:-76.9322,lines:['GREEN'] },
+  { id:'branch_ave',         name:'Branch Ave',            lat:38.8283,lng:-76.9129,lines:['GREEN'] },
+  // YELLOW
+  { id:'huntington',         name:'Huntington',            lat:38.7958,lng:-77.0722,lines:['YELLOW'] },
+];
+
+const METRO_LINES = {
+  RED:    ['shady_grove','rockville','twinbrook','white_flint','grosvenor','medical_center','bethesda','friendship_heights','tenleytown','van_ness','cleveland_park','woodley_park','dupont_circle','farragut_north','metro_center','gallery_place','judiciary_sq','union_station','noma','rhode_island','brookland','fort_totten','takoma','silver_spring','forest_glen','wheaton','glenmont'],
+  BLUE:   ['franconia','van_dorn','king_street','braddock_road','reagan_national','crystal_city','pentagon_city','pentagon','arlington_cemetery','rosslyn','foggy_bottom','farragut_west','metro_center','federal_triangle','smithsonian','lenfant_plaza','federal_center','capitol_south','eastern_market','potomac_ave','stadium_armory','benning_road','capitol_heights','addison_road','morgan_blvd','largo'],
+  ORANGE: ['vienna','dunn_loring','west_falls_church','east_falls_church','rosslyn','foggy_bottom','farragut_west','metro_center','federal_triangle','smithsonian','lenfant_plaza','federal_center','capitol_south','eastern_market','potomac_ave','stadium_armory','benning_road','capitol_heights','addison_road','morgan_blvd'],
+  SILVER: ['ashburn','loudoun_gateway','dulles','innovation_center','herndon','reston_town','wiehle','spring_hill','greensboro','tysons_corner','mclean','east_falls_church','rosslyn','foggy_bottom','farragut_west','metro_center','federal_triangle','smithsonian','lenfant_plaza','federal_center','capitol_south','eastern_market','potomac_ave','stadium_armory','benning_road','capitol_heights','addison_road','morgan_blvd','largo'],
+  GREEN:  ['greenbelt','college_park','prince_georges','west_hyattsville','hyattsville','fort_totten','columbia_heights','u_street','shaw','mt_vernon','gallery_place','archives','lenfant_plaza','waterfront','navy_yard','anacostia','congress_heights','southern_ave','naylor_road','suitland','branch_ave'],
+  YELLOW: ['huntington','king_street','braddock_road','reagan_national','crystal_city','pentagon_city','pentagon','lenfant_plaza','archives','mt_vernon','shaw','u_street','columbia_heights','fort_totten','gallery_place'],
+};
+
+// Build station lookup (fallback)
+const stationById = {};
+METRO_STATIONS.forEach(s => { stationById[s.id] = s; });
+
+window.WMATA_STATIONS  = METRO_STATIONS;
+window.stationById     = stationById;
+
+// ── Draw metro network (nhận data động hoặc dùng fallback) ──
+function drawMetroNetwork(stations, lineRoutes, stByCode) {
+  // Dùng tham số nếu có, không thì dùng fallback
+  stations   = stations   || METRO_STATIONS;
+  stByCode   = stByCode   || stationById;
+  lineRoutes = lineRoutes || {};
+
+  // Nếu không có lineRoutes (fallback), build từ METRO_LINES
+  const routeSource = Object.keys(lineRoutes).length ? lineRoutes : {};
+  if (!Object.keys(routeSource).length) {
+    Object.entries(METRO_LINES).forEach(([k, ids]) => { routeSource[k] = ids; });
+  }
+
+  metroLayer.clearLayers();
+
+  Object.entries(routeSource).forEach(([lineName, ids]) => {
+    const color = getWmataColor(lineName);
+    const coords = ids
+      .map(id => stByCode[id])
+      .filter(Boolean)
+      .map(s => [s.lat, s.lng]);
+    if (coords.length < 2) return;
+
+    // Glow
+    L.polyline(coords, { color, weight: 8, opacity: 0.25, smoothFactor: 1, interactive: false }).addTo(metroLayer);
+    // Main
+    L.polyline(coords, { color, weight: 4, opacity: 0.85, smoothFactor: 1, interactive: false }).addTo(metroLayer);
+  });
+
+  // Station dots
+  stations.forEach(s => {
+    const isTransfer = s.lines.length > 1;
+    const color = getWmataColor(s.lines[0]);
+    const r = isTransfer ? 6 : 4;
+    const icon = L.divIcon({
+      className: '',
+      html: `<svg width="${r*2+4}" height="${r*2+4}" viewBox="0 0 ${r*2+4} ${r*2+4}">
+        <circle cx="${r+2}" cy="${r+2}" r="${r}"
+          fill="${isTransfer?'#111620':color}" stroke="${color}" stroke-width="${isTransfer?2:1.5}"/>
+        ${isTransfer?`<circle cx="${r+2}" cy="${r+2}" r="${r-3}" fill="${color}"/>`:''}
+      </svg>`,
+      iconSize: [r*2+4, r*2+4], iconAnchor: [r+2, r+2],
+    });
+    const badge = s.lines.map(l =>
+      `<span style="background:${getWmataColor(l)}22;color:${getWmataColor(l)};
+        border:1px solid ${getWmataColor(l)}44;padding:1px 6px;border-radius:3px;
+        font-size:10px;font-weight:700">${l}</span>`
+    ).join(' ');
+    L.marker([s.lat, s.lng], { icon }).addTo(metroLayer)
+      .bindPopup(`<b style="font-size:13px">${s.name}</b>
+        <div style="margin-top:5px;display:flex;gap:4px;flex-wrap:wrap">${badge}</div>`);
+  });
+}
+
+// Vẽ ngay với fallback data khi trang load
+drawMetroNetwork();
+
+
 
 // Custom icons
 function makeIcon(color, size = 12) {
@@ -526,9 +901,13 @@ function clearLog() {
 }
 
 async function fetchJourneys(origin, dest, depTimeSec) {
-  const res = await fetch(`${API_BASE}/route?from=${origin}&to=${dest}&dep=${depTimeSec}`);
-  return await res.json();
-
+  try {
+    const res = await fetch(`${API_BASE}/route?from=${origin}&to=${dest}&dep=${depTimeSec}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch(e) {
+    log(`<span class="dim">⚠ Backend offline — dùng mock data (${e.message})</span>`);
+  }
   await new Promise(r => setTimeout(r, 900 + Math.random()*600));
   return [
     {
@@ -606,12 +985,15 @@ function renderJourneyOnMap(journey) {
   routeLayer.clearLayers();
   markerLayer.clearLayers();
 
-  const colors = ['#00e5b0','#5b8fff','#ffb340','#ff4d6a','#c084fc'];
+  // Dim metro network khi hiển thị route kết quả
+  metroLayer.eachLayer(l => { if (l.setStyle) l.setStyle({ opacity: 0.18 }); });
+
+  const fallbackColors = ['#00e5b0','#5b8fff','#ffb340','#ff4d6a','#c084fc'];
   let boardIdx = 0;
 
   journey.legs.forEach((leg, i) => {
     if (leg.type === 'board' && leg.polyline) {
-      const color = colors[boardIdx % colors.length];
+      const color = getWmataColor(leg.route_id) || fallbackColors[boardIdx % fallbackColors.length];
       boardIdx++;
 
       // Route polyline
@@ -619,7 +1001,6 @@ function renderJourneyOnMap(journey) {
         color, weight: 4, opacity: 0.85, smoothFactor: 1.5,
       }).addTo(routeLayer);
 
-      // Intermediate stops (smaller dots)
       leg.polyline.slice(1,-1).forEach(pt => {
         L.marker(pt, { icon: makeIcon(color, 8) }).addTo(markerLayer);
       });
@@ -679,17 +1060,18 @@ function renderJourneys(data) {
         <span class="journey-duration">${duration} phút</span>
       </div>
       <div class="journey-legs">
-        ${boardLegs.map((l, i) => `
-          ${i > 0 ? '<span class="leg-sep">→</span>' : ''}
-          <span class="leg-chip bus">
+        ${boardLegs.map((l, i) => {
+          const chipColor = getWmataColor(l.route_id);
+          return `${i > 0 ? '<span class="leg-sep">→</span>' : ''}
+          <span class="leg-chip bus" style="background:${chipColor}22;color:${chipColor}">
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
               <rect x="1" y="2" width="8" height="6" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
               <circle cx="3" cy="8.5" r="0.8" fill="currentColor"/>
               <circle cx="7" cy="8.5" r="0.8" fill="currentColor"/>
             </svg>
             ${l.route_id}
-          </span>
-        `).join('')}
+          </span>`;
+        }).join('')}
         ${j.transfers > 0 ? `<span class="leg-sep">·</span><span class="leg-chip transfer">
           ${j.transfers} đổi
         </span>` : ''}

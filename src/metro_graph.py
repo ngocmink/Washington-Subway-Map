@@ -33,7 +33,7 @@ class MetroGraphBuilder:
         self.transfer_penalty = transfer_penalty
         self.graph            = nx.DiGraph()
 
-    def build(self, cache_path: str = './data/graph.pkl', force_rebuild: bool = False) -> nx.DiGraph:
+    def build(self, cache_path: str = './data/metro_graph.pkl', force_rebuild: bool = False) -> nx.DiGraph:
         import os, pickle, time
 
         if not force_rebuild and os.path.exists(cache_path):
@@ -286,9 +286,9 @@ class MetroGraphBuilder:
 
 if __name__ == '__main__':
     GTFS_PATH  = './data/rail.zip'
-    SOURCE     = 'STN_G01'
-    TARGET     = 'STN_G02'
-    START_TIME = 6 * 3600
+    SOURCE     = 'STN_G02'
+    TARGET     = 'STN_C02'
+    START_TIME = to_seconds('08:00:00')
 
     builder = MetroGraphBuilder(GTFS_PATH, transfer_penalty=300)
     builder.build(cache_path='./data/graph.pkl')

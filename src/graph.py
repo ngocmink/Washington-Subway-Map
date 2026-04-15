@@ -5,7 +5,6 @@ from collections import defaultdict
 import pandas as pd
 import networkx as nx
 
-
 def to_seconds(t: str) -> int:
     h, m, s = map(int, t.strip().split(':'))
     return h * 3600 + m * 60 + s
@@ -116,19 +115,22 @@ class MetroGraphBuilder:
             .set_index('stop_id')['parent_station']
             .to_dict()
         )
+        station_stops = stops[stops['location_type'] == 1]
 
-        for _, row in stops.iterrows():
+        for _, row in station_stops.iterrows():
             self.graph.add_node(
                 row['stop_id'],
+                station_id = row['stop_id'],
                 name = row['stop_name'],
                 type = 'station',
+                node_id = row['stop_id'],
                 pos  = (float(row['stop_lat']), float(row['stop_lon'])), # xem xét loại bỏ
             )
 
         trip_to_route = dict(zip(trips['trip_id'], trips['route_id']))
         trip_to_sv = dict(zip(trips['trip_id'], trips['service_id'])) # Lấy service_id
         stop_id_to_name = dict(zip(stops['stop_id'], stops['stop_name']))
-        
+
         stop_times_sorted = stop_times.sort_values(['trip_id', 'stop_sequence'])
 
         for trip_id, group in stop_times_sorted.groupby('trip_id', sort=False):
@@ -149,8 +151,9 @@ class MetroGraphBuilder:
                         route_node,
                         name = stop_id_to_name.get(stop_id),
                         type='route_stop',
-                        station_id=stop_id,
-                        next_node=nodes_in_trip[i+1] if i < len(nodes_in_trip) - 1 else None,
+                        station_id=hub_id,
+                        node_id=route_node,
+                        next_node=f"{nodes_in_trip[i+1]}_{route_id}" if i < len(nodes_in_trip) - 1 else None,
                         route=route_id, 
                         arr_time=[to_seconds(rows.loc[i, 'arrival_time'])], 
                         sv_id=trip_to_sv[trip_id]
@@ -169,7 +172,7 @@ class MetroGraphBuilder:
                     if travel_time >= 0:
                         self.graph.add_edge(route_node, next_route_node, weight=travel_time, label='travel')
 
-        self._add_walking_edges(stops)
+        walk_edges = self._add_walking_edges(stops)
 
         import os, pickle
         os.makedirs(os.path.dirname(cache_path) if os.path.dirname(cache_path) else '.', exist_ok=True)
@@ -180,15 +183,17 @@ class MetroGraphBuilder:
         print(
             f"[Build] Hoàn tất — "
             f"{self.graph.number_of_nodes()} nodes, "
-            f"{self.graph.number_of_edges()} edges."
+            f"{self.graph.number_of_edges()} edges "
+            f"(trong đó {walk_edges} cạnh đi bộ, "
+            f"ngưỡng {self.walk_max_meters}m)."
         )
         return self.graph
 
-if __name__ == '__main__':
-    MGB = MetroGraphBuilder('./data/rail.zip', transfer_penalty=300)
-    G = MGB.build()
-    path = nx.shortest_path(G, source='STN_G02', target='STN_C02', weight='weight')
-    print("Đường đi:")
-    for node in path:
-        attrs = G.nodes[node].get('name')
-        print(attrs)
+# if __name__ == '__main__':
+#     MGB = MetroGraphBuilder('./data/rail.zip', transfer_penalty=300)
+#     G = MGB.build()
+#     path = MetroRouter(G, source='STN_G02', target='STN_C02', dep_time='08:00:00', k=3)()
+#     print("Đường đi:")
+#     for node in path:
+#         attrs = G.nodes[node].get('name')
+#         print(attrs)
