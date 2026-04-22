@@ -130,6 +130,7 @@ class MetroGraphBuilder:
         trip_to_route = dict(zip(trips['trip_id'], trips['route_id']))
         trip_to_sv = dict(zip(trips['trip_id'], trips['service_id'])) # Lấy service_id
         stop_id_to_name = dict(zip(stops['stop_id'], stops['stop_name']))
+        trip_to_direction = dict(zip(trips['trip_id'], trips['direction_id'].astype(str)))
 
         stop_times_sorted = stop_times.sort_values(['trip_id', 'stop_sequence'])
 
@@ -137,13 +138,15 @@ class MetroGraphBuilder:
             route_id = trip_to_route.get(trip_id)
             if route_id is None:
                 continue
-
+            direction = trip_to_direction.get(trip_id)
+            if direction is None:
+                continue
             rows = group.reset_index(drop=True)
             nodes_in_trip = rows['stop_id'].tolist()
 
             for i in range(len(nodes_in_trip)):
                 stop_id = nodes_in_trip[i]
-                route_node = f"{stop_id}_{route_id}"
+                route_node = f"{stop_id}_{route_id}_{direction}"
                 hub_id = platform_to_hub.get(stop_id, stop_id)
 
                 if route_node not in self.graph or 'arr_time' not in self.graph.nodes[route_node]:
@@ -153,7 +156,7 @@ class MetroGraphBuilder:
                         type='route_stop',
                         station_id=hub_id,
                         node_id=route_node,
-                        next_node=f"{nodes_in_trip[i+1]}_{route_id}" if i < len(nodes_in_trip) - 1 else None,
+                        next_node=f"{nodes_in_trip[i+1]}_{route_id}_{direction}" if i < len(nodes_in_trip) - 1 else None,
                         route=route_id, 
                         arr_time=[to_seconds(rows.loc[i, 'arrival_time'])], 
                         sv_id=trip_to_sv[trip_id]
@@ -166,11 +169,15 @@ class MetroGraphBuilder:
 
                 if i < len(nodes_in_trip) - 1:
                     next_stop_id = nodes_in_trip[i+1]
-                    next_route_node = f"{next_stop_id}_{route_id}"
+                    next_route_node = f"{next_stop_id}_{route_id}_{direction}"
                     
                     travel_time = to_seconds(rows.loc[i+1, 'arrival_time']) - to_seconds(rows.loc[i, 'arrival_time'])
                     if travel_time >= 0:
                         self.graph.add_edge(route_node, next_route_node, weight=travel_time, label='travel')
+
+        for n, data in self.graph.nodes(data=True):
+            if data.get('type') == 'route_stop':
+                data['arr_time'].sort()
 
         walk_edges = self._add_walking_edges(stops)
 
