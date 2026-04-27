@@ -163,10 +163,13 @@ class MetroRouter:
                             pass
                         else:
                             path.append(f"Take route {route[pv_node_key]}")
-                        
-                    path.append(name)
-                    current_id = parent.get(node_key)
+                    if not tau.get((num_changes, node_key), float('inf')) == float('inf') and path and not path[-1].startswith('Walk to'):
+                        path.append(seconds_to_hms(tau.get((num_changes, node_key), float('inf')))) 
 
+                    path.append(name)
+                    path.append(seconds_to_hms(best_trip_possible[node_key]))
+
+                    current_id = parent.get(node_key)    
                     if current_id is None:
                         print("Lỗi truy vết.")
                         break
@@ -176,6 +179,7 @@ class MetroRouter:
                             path.append(f"Walk to {self.graph.nodes[pv_node_key].get('name')}")
                         else:
                             path.append(f"Take route {route[node_key]}")
+                        path.append(f"Depart at {departure_time}")
                         break
                     if current_id.get('walking'):
                         path.append(f"Walk to {self.graph.nodes[pv_node_key].get('name')}")
@@ -184,6 +188,7 @@ class MetroRouter:
                     pv_node_key = node_key
 
                 path.reverse()
+                path.pop(-1)
                 all_path.append((arrival_time, path))
 
         if best_trip_possible[target_id] == float('inf'):
