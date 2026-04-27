@@ -188,7 +188,7 @@ class MetroRouter:
                     pv_node_key = node_key
 
                 path.reverse()
-                path.pop(-1)
+                # path.pop(-1)
                 all_path.append((arrival_time, path))
 
         if best_trip_possible[target_id] == float('inf'):
