@@ -195,12 +195,3 @@ class MetroGraphBuilder:
             f"ngưỡng {self.walk_max_meters}m)."
         )
         return self.graph
-
-# if __name__ == '__main__':
-#     MGB = MetroGraphBuilder('./data/rail.zip', transfer_penalty=300)
-#     G = MGB.build()
-#     path = MetroRouter(G, source='STN_G02', target='STN_C02', dep_time='08:00:00', k=3)()
-#     print("Đường đi:")
-#     for node in path:
-#         attrs = G.nodes[node].get('name')
-#         print(attrs)

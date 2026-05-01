@@ -5,14 +5,42 @@ import bisect
 
 from .graph import MetroGraphBuilder, to_seconds, seconds_to_hms
 
+class DisruptionManager:
+    def __init__(self):
+        self.disabled_routes = set()      # route_id bị đóng hoàn toàn
+        self.disabled_stations = set()    # station_id bị đóng
+        self.disabled_segments = set()    # (station_a, station_b, route_id) đoạn cụ thể
+
+    def disable_route(self, route_id: str):
+        self.disabled_routes.add(route_id)
+
+    def disable_station(self, station_id: str):
+        self.disabled_stations.add(station_id)
+
+    def disable_segment(self, from_station: str, to_station: str, route_id: str):
+        self.disabled_segments.add((from_station, to_station, route_id))
+
+    def enable_route(self, route_id: str):
+        self.disabled_routes.discard(route_id)
+
+    def is_node_ok(self, node_data: dict) -> bool:
+        """Trả về False nếu node này không được dùng."""
+        if node_data.get('station_id') in self.disabled_stations:
+            return False
+        if node_data.get('type') == 'route_stop':
+            if node_data.get('route') in self.disabled_routes:
+                return False
+        return True
+
 class MetroRouter:
-    def __init__(self, graph, source, target, dep_time, k=5):
+    def __init__(self, graph, source, target, dep_time, k=5, disruptions: DisruptionManager = None):
         self.graph = graph
         self.source = source
         self.target = target
         self.dep_time = dep_time
         self.k = k
         self.num_path = 0
+        self.disruptions = disruptions or DisruptionManager()
 
     def __call__ (self):
         
@@ -82,7 +110,8 @@ class MetroRouter:
 
                         # Cần update tất cả các node trên từng route
                         if self.graph.nodes[node]['type'] == 'station' and k > 1:
-                            
+                            if not self.disruptions.is_node_ok(self.graph.nodes[node]):
+                                continue
                             # Xét với thời gian đi bộ
                             if best_trip_possible[station_id] > tau[(k-1, pv_station_id)] + self.graph[pv_node][node]['weight']:
                                 best_trip_possible[station_id] = tau[(k-1, pv_station_id)] + self.graph[pv_node][node]['weight']
@@ -96,6 +125,9 @@ class MetroRouter:
                                 prev_change_nodes.append(node)
 
                         elif self.graph.nodes[node]['type'] == 'route_stop':
+                            if not self.disruptions.is_node_ok(self.graph.nodes[node]):
+                                continue
+
                             arr_times = self.graph.nodes[node]['arr_time']
 
                             # Tìm chuyến sớm nhất đón được
@@ -125,6 +157,8 @@ class MetroRouter:
                                 next_node = station_to_node[next_node_id]
                                 next_station_id = self.graph.nodes[next_node].get('station_id') if next_node else None
                                 if next_node is None:
+                                    break
+                                if not self.disruptions.is_node_ok(self.graph.nodes[next_node]):
                                     break
 
                                 tau[(k, next_station_id)] = min(tau.get((k, next_station_id)), time_departure + self.graph[node][next_node]['weight'])
