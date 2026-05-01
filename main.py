@@ -1,21 +1,28 @@
 import networkx as nx
 from src.graph import MetroGraphBuilder
 from src.algorithm import MetroRouter
+from src.algorithm import DisruptionManager
 
 MY_API_KEY = "1b189a39a39f4a209b91cdac2fa01c26"
 
 def main():
+    dm = DisruptionManager()
+
+    dm.disable_route("YELLOW")
+    dm.disable_station("BEN_THANH_ID")
+    dm.disable_segment("Pentagon", "Rosslyn", "BLUE")
+
     MGB = MetroGraphBuilder('./data/rail.zip', transfer_penalty=300)
     metro_map = MGB.build()
-    path = MetroRouter(metro_map, source='Capitol Heights', target='Judiciary Sq', dep_time='08:00:00', k=10)()
+    path = MetroRouter(metro_map, source='Capitol Heights', target='Judiciary Sq', dep_time='08:00:00', k=5, disruptions=dm)()
     print("Đường đi:")
     print(path)
-    path_2 = MetroRouter(metro_map, source='Dupont Circle', target='Anacostia', dep_time='08:00:00', k=10)()
+    path_2 = MetroRouter(metro_map, source='Arlington Cemetery', target='Downtown Largo', dep_time='08:00:00', k=5)()
     print("Đường đi 2:")
     print(path_2)
-    path_3 = MetroRouter(metro_map, source='Minnesota Av', target='Pentagon', dep_time='08:00:00', k=10)()
-    print("Đường đi 3:")
-    print(path_3)
+    # path_3 = MetroRouter(metro_map, source='Minnesota Av', target='Pentagon', dep_time='08:00:00', k=5)()
+    # print("Đường đi 3:")
+    # print(path_3)
     # path_nx = nx.shortest_path(metro_map, source='STN_G02', target='STN_C02', weight='weight')
     # print(path_nx)
     
