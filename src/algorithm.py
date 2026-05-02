@@ -13,24 +13,36 @@ class DisruptionManager:
 
     def disable_route(self, route_id: str):
         self.disabled_routes.add(route_id)
+    
+    def enable_route(self, route_id: str):
+        self.disabled_routes.discard(route_id)
 
     def disable_station(self, station_id: str):
         self.disabled_stations.add(station_id)
 
+    def enable_station(self, station_id: str):
+        self.disabled_stations.discard(station_id)
+
     def disable_segment(self, from_station: str, to_station: str, route_id: str):
-        self.disabled_segments.add((from_station, to_station, route_id))
+        self.disabled_segments.add((from_station, route_id))
+        self.disabled_segments.add((to_station, route_id))
 
-    def enable_route(self, route_id: str):
-        self.disabled_routes.discard(route_id)
+    def enable_segment(self, from_station: str, to_station: str, route_id: str):
+        self.disabled_segments.discard((from_station, route_id))
+        self.disabled_segments.discard((to_station, route_id))
 
-    def is_node_ok(self, node_data: dict) -> bool:
-        """Trả về False nếu node này không được dùng."""
+    def is_station_ok(self, station_id: str) -> bool:
+        return station_id not in self.disabled_stations
+
+    def is_route_stop_ok(self, node_data: dict) -> bool:
+        if node_data.get('route') in self.disabled_routes:
+            return False
         if node_data.get('station_id') in self.disabled_stations:
             return False
-        if node_data.get('type') == 'route_stop':
-            if node_data.get('route') in self.disabled_routes:
-                return False
         return True
+
+    def is_segment_ok(self, station_id: str, route_id: str) -> bool:
+        return (station_id, route_id) not in self.disabled_segments
 
 class MetroRouter:
     def __init__(self, graph, source, target, dep_time, k=5, disruptions: DisruptionManager = None):
@@ -110,7 +122,7 @@ class MetroRouter:
 
                         # Cần update tất cả các node trên từng route
                         if self.graph.nodes[node]['type'] == 'station' and k > 1:
-                            if not self.disruptions.is_node_ok(self.graph.nodes[node]):
+                            if not self.disruptions.is_station_ok(station_id):
                                 continue
                             # Xét với thời gian đi bộ
                             if best_trip_possible[station_id] > tau[(k-1, pv_station_id)] + self.graph[pv_node][node]['weight']:
@@ -125,7 +137,7 @@ class MetroRouter:
                                 prev_change_nodes.append(node)
 
                         elif self.graph.nodes[node]['type'] == 'route_stop':
-                            if not self.disruptions.is_node_ok(self.graph.nodes[node]):
+                            if not self.disruptions.is_route_stop_ok(self.graph.nodes[node]):
                                 continue
 
                             arr_times = self.graph.nodes[node]['arr_time']
@@ -158,7 +170,13 @@ class MetroRouter:
                                 next_station_id = self.graph.nodes[next_node].get('station_id') if next_node else None
                                 if next_node is None:
                                     break
-                                if not self.disruptions.is_node_ok(self.graph.nodes[next_node]):
+
+                                # Kiểm tra disruption
+                                if not self.disruptions.is_station_ok(next_station_id):
+                                    break
+                                if not self.disruptions.is_segment_ok(self.graph.nodes[next_station_id].get('name'), self.graph.nodes[next_node].get('route')):
+                                    break
+                                if not self.disruptions.is_route_stop_ok(self.graph.nodes[next_node]):
                                     break
 
                                 tau[(k, next_station_id)] = min(tau.get((k, next_station_id)), time_departure + self.graph[node][next_node]['weight'])

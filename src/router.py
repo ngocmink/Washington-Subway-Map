@@ -1,11 +1,15 @@
+import webbrowser
+import threading
+import os
 import re
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from .graph import MetroGraphBuilder, seconds_to_hms, to_seconds
-from .algorithm import MetroRouter
+from .algorithm import MetroRouter, DisruptionManager
 
 
 graph = None
@@ -22,6 +26,14 @@ async def lifespan(app: FastAPI):
     )
     graph = builder.build(cache_path='./data/graph.pkl')
     print("[Startup] Graph sẵn sàng!")
+
+    def open_browser():
+        import time
+        time.sleep(1.5)
+        webbrowser.open("http://127.0.0.1:8000")
+    
+    threading.Thread(target=open_browser, daemon=True).start()
+
     yield
     print("[Shutdown] Dọn dẹp...")
 
@@ -130,12 +142,18 @@ async def find_route(req: RouteRequest):
         raise HTTPException(status_code=503, detail="Graph chưa sẵn sàng, thử lại sau.")
 
     try:
+        dm = DisruptionManager()
+
+        dm.disable_route("YELLOW")
+        dm.disable_station("Pentagon")
+        dm.disable_segment("Smithsonian", "Federal Triangle", "BLUE")
         router = MetroRouter(
             graph=graph,
             source=req.origin,
             target=req.destination,
             dep_time=req.dep_time,
             k=req.k,
+            disruptions=dm
         )
         all_paths = router()
     except Exception as e:
@@ -156,6 +174,10 @@ async def find_route(req: RouteRequest):
         ))
 
     return results
+
+@app.get("/")
+async def serve_index():
+    return FileResponse("transit_route.html")
 
 @app.get("/health")
 async def health():
