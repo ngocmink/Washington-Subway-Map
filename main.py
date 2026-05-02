@@ -8,9 +8,9 @@ MY_API_KEY = "1b189a39a39f4a209b91cdac2fa01c26"
 def main():
     dm = DisruptionManager()
 
-    dm.disable_route("YELLOW")
-    dm.disable_station("BEN_THANH_ID")
-    dm.disable_segment("Pentagon", "Rosslyn", "BLUE")
+    dm.disable_route("BLUE")
+    dm.disable_station("Pentagon")
+    dm.disable_segment("Smithsonian", "Federal Triangle", "SILVER")
 
     MGB = MetroGraphBuilder('./data/rail.zip', transfer_penalty=300)
     metro_map = MGB.build()
