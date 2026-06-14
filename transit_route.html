@@ -253,7 +253,8 @@ html,body{height:100%;background:var(--bg-base);color:var(--text-1);font-family:
 
 </div><!-- .app -->
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
 // ── Map tên tuyến → màu highlight ────────────────────────
 function lineColor(route) {
   const MAP = {
@@ -269,7 +270,6 @@ function timeStrToSec(t) {
   const parts = t.split(':').map(Number);
   return parts[0]*3600 + parts[1]*60 + (parts[2]||0);
 }
-
 </script>
 <script>
 
@@ -287,44 +287,234 @@ const LINE_COLORS = {
   YELLOW:'#FFD100', ORANGE:'#ED8B00', SILVER:'#919D9D'
 };
 
-// Build fast lookup tables once
-const stationById = Object.create(null);
-const stationList = GTFS.stations;
-const stationIdxMap = Object.create(null);
-
-stationList.forEach((s, i) => {
-  stationById[s.id] = s;
-  stationIdxMap[s.id] = i;
+// ── Lookup nhanh: tên ga thường (lowercase) → {lat, lng} ──
+const _backendNameCoord = {};
+GTFS.stations.forEach(s => {
+  _backendNameCoord[s.name.toLowerCase()] = [s.lat, s.lng];
 });
 
-// ── Lookup tên ga → [lat,lng] ───────────────────────────
-const _sCoord = Object.create(null);
-GTFS.stations.forEach(s => { _sCoord[s.name.toLowerCase()] = [s.lat, s.lng]; });
-function stationCoord(name) { return name ? _sCoord[name.toLowerCase()] : null; }
+function stationCoord(name) {
+  const c = _backendNameCoord[(name || '').toLowerCase()];
+  return c ? [c[0], c[1]] : null;
+}
+// ── Build polyline cho leg từ backend bằng cách cắt GTFS.shapes ──
+// ── Build lookup: tên ga → station object ──────────────
+// (stationById được build bên dưới sau khi stationList sẵn sàng)
 
-// ── Cắt đoạn shape đúng tuyến giữa 2 ga ─────────────────
-// Dùng GTFS.shapes để vẽ đường cong thật thay vì đường thẳng
+// ── Build tên ga → id ────────────────────────────────────
+const _nameToId = Object.create(null);
+GTFS.stations.forEach(s => { _nameToId[s.name.toLowerCase()] = s.id; });
+
+// ── Tìm route variant nào có cả fromId và toId ───────────
+function findRouteVariant(routeId, fromId, toId) {
+  for (const r of GTFS.routes) {
+    if (r.r !== routeId) continue;
+    const fi = r.s.indexOf(fromId);
+    if (fi < 0) continue;
+    const ti = r.s.indexOf(toId);
+    if (ti < 0) continue;
+    return { route: r, fromPos: fi, toPos: ti };
+  }
+  return null;
+}
+
+// ── Snap 1 điểm vào shape, trả về index gần nhất ─────────
+function snapToShape(shape, pt) {
+  let best = 0, minD = Infinity;
+  for (let i = 0; i < shape.length; i++) {
+    const d = (shape[i][0]-pt[0])**2 + (shape[i][1]-pt[1])**2;
+    if (d < minD) { minD = d; best = i; }
+  }
+  return best;
+}
+
+// ── Tìm route variant bất kỳ tuyến nào có cả 2 ga ──────
+function findRouteVariantAny(fromId, toId) {
+  for (const r of GTFS.routes) {
+    const fi = r.s.indexOf(fromId);
+    if (fi < 0) continue;
+    const ti = r.s.indexOf(toId);
+    if (ti < 0) continue;
+    return { route: r, fromPos: fi, toPos: ti };
+  }
+  return null;
+}
+
+// ── Fallback: snap fromPt/toPt vào shape, cắt đoạn ──────
+function buildPolylineViaShapeSnap(shape, fromPt, toPt) {
+  const n = shape.length;
+  if (n < 2) return [fromPt, toPt];
+
+  let iF = 0, minDF = Infinity;
+  let iT = 0, minDT = Infinity;
+  for (let j = 0; j < n; j++) {
+    const dF = (shape[j][0]-fromPt[0])**2 + (shape[j][1]-fromPt[1])**2;
+    const dT = (shape[j][0]-toPt[0])**2  + (shape[j][1]-toPt[1])**2;
+    if (dF < minDF) { minDF = dF; iF = j; }
+    if (dT < minDT) { minDT = dT; iT = j; }
+  }
+  if (iF === iT) return [fromPt, toPt];
+
+  const lo = Math.min(iF, iT), hi = Math.max(iF, iT);
+  let seg = shape.slice(lo, hi + 1);
+  if (iF > iT) seg = seg.slice().reverse();
+
+  return [fromPt, ...seg.slice(1, -1), toPt];
+}
+
+// ── Hàm chính: build polyline cho 1 leg ─────────────────
+// Chiến lược:
+//   1. Tìm route variant chứa cả 2 ga
+//   2. Lấy danh sách ga trung gian theo thứ tự
+//   3. Với mỗi cặp ga liên tiếp, snap vào shape để lấy
+//      đường cong thực tế, tránh đường thẳng
+//   4. PIN tọa độ ga chính xác ở đầu/cuối để các leg nối nhau
 function getRouteSegment(routeName, fromName, toName) {
-  const shape = GTFS.shapes[(routeName || '').toUpperCase()];
-  if (!shape || shape.length < 2) return null;
+  const routeId = (routeName || '').toUpperCase();
   const fromPt = stationCoord(fromName);
   const toPt   = stationCoord(toName);
   if (!fromPt || !toPt) return null;
 
-  function nearest(shape, pt) {
-    let best = 0, bestD = Infinity;
-    for (let i = 0; i < shape.length; i++) {
-      const d = (shape[i][0]-pt[0])**2 + (shape[i][1]-pt[1])**2;
-      if (d < bestD) { bestD = d; best = i; }
-    }
-    return best;
-  }
+  const shape = GTFS.shapes[routeId];
+  if (!shape || shape.length < 2) return [fromPt, toPt];
 
-  const iF = nearest(shape, fromPt);
-  const iT = nearest(shape, toPt);
-  return iF <= iT
-    ? shape.slice(iF, iT + 1)
-    : shape.slice(iT, iF + 1).slice().reverse();
+  return buildPolylineViaShapeSnap(shape, fromPt, toPt);
+}
+// function getRouteSegment(routeName, fromName, toName) {
+//   const routeId = (routeName || '').toUpperCase();
+//   const shape   = GTFS.shapes[routeId];
+//   const fromId  = _nameToId[(fromName||'').toLowerCase()];
+//   const toId    = _nameToId[(toName||'').toLowerCase()];
+
+//   const fromPt = fromId && GTFS.stations.find(s=>s.id===fromId) 
+//     ? [GTFS.stations.find(s=>s.id===fromId).lat, GTFS.stations.find(s=>s.id===fromId).lng]
+//     : null;
+//   const toPt = toId && GTFS.stations.find(s=>s.id===toId)
+//     ? [GTFS.stations.find(s=>s.id===toId).lat, GTFS.stations.find(s=>s.id===toId).lng]
+//     : null;
+
+//   if (!fromPt || !toPt) return null;
+
+//   // Không có shape → nối thẳng qua các ga
+//   if (!shape || shape.length < 2) {
+//     const found = findRouteVariant(routeId, fromId, toId);
+//     if (!found) return [fromPt, toPt];
+//     const { route, fromPos, toPos } = found;
+//     const lo = Math.min(fromPos, toPos), hi = Math.max(fromPos, toPos);
+//     const stnIds = route.s.slice(lo, hi + 1);
+//     if (fromPos > toPos) stnIds.reverse();
+//     const pts = stnIds.map(id => {
+//       const s = GTFS.stations.find(x => x.id === id);
+//       return s ? [s.lat, s.lng] : null;
+//     }).filter(Boolean);
+//     return pts.length >= 2 ? pts : [fromPt, toPt];
+//   }
+
+//   // Có shape → tìm route variant, snap các ga vào shape
+//   // Nếu không tìm thấy với tuyến chỉ định, thử bất kỳ tuyến nào đi qua cả 2 ga
+//   let found = findRouteVariant(routeId, fromId, toId);
+//   if (!found) {
+//     found = findRouteVariantAny(fromId, toId);
+//   }
+//   if (!found) {
+//     // Không có route nào chứa cả 2 ga (ga nằm trên 2 nhánh khác nhau)
+//     // Tìm ga junction chung: từ stopRoutes tìm route nào có fromId,
+//     // rồi duyệt các ga trung gian xem có route nào nối được tới toId
+//     const fromRouteIdxs = (GTFS.stopRoutes[fromId] || []).map(([ri]) => ri);
+//     const toRouteIdxs   = new Set((GTFS.stopRoutes[toId]   || []).map(([ri]) => ri));
+//     let bridge = null;
+//     outer: for (const ri of fromRouteIdxs) {
+//       const r = GTFS.routes[ri];
+//       for (const junctionId of r.s) {
+//         if ((GTFS.stopRoutes[junctionId] || []).some(([rj]) => toRouteIdxs.has(rj))) {
+//           // Tìm được junction! Kiểm tra có route nối junction → toId không
+//           const jToRoute = GTFS.routes.find(rr =>
+//             rr.s.includes(junctionId) && rr.s.includes(toId)
+//           );
+//           if (jToRoute) {
+//             bridge = { fromRoute: r, junctionId, toRoute: jToRoute };
+//             break outer;
+//           }
+//         }
+//       }
+//     }
+
+//     if (bridge) {
+//       const { fromRoute, junctionId, toRoute } = bridge;
+//       const fi1 = fromRoute.s.indexOf(fromId);
+//       const ti1 = fromRoute.s.indexOf(junctionId);
+//       const fi2 = toRoute.s.indexOf(junctionId);
+//       const ti2 = toRoute.s.indexOf(toId);
+
+//       const seg1Ids = fromRoute.s.slice(Math.min(fi1,ti1), Math.max(fi1,ti1)+1);
+//       if (fi1 > ti1) seg1Ids.reverse();
+//       const seg2Ids = toRoute.s.slice(Math.min(fi2,ti2), Math.max(fi2,ti2)+1);
+//       if (fi2 > ti2) seg2Ids.reverse();
+
+//       const allIds = [...seg1Ids, ...seg2Ids.slice(1)]; // bỏ junction trùng
+//       const pts = allIds.map(id => {
+//         const s = GTFS.stations.find(x => x.id === id);
+//         return s ? [s.lat, s.lng] : null;
+//       }).filter(Boolean);
+
+//       // Snap qua shape để lấy đường cong
+//       const snapPts = [];
+//       for (let i = 0; i < pts.length - 1; i++) {
+//         const useShape = i < seg1Ids.length - 1 ? shape : (GTFS.shapes[toRoute.r] || shape);
+//         const iA = snapToShape(useShape, pts[i]);
+//         const iB = snapToShape(useShape, pts[i+1]);
+//         const slice = useShape.slice(Math.min(iA,iB), Math.max(iA,iB)+1);
+//         if (iA > iB) slice.reverse();
+//         if (i === 0) snapPts.push(...slice);
+//         else snapPts.push(...slice.slice(1));
+//       }
+
+//       return snapPts.length >= 2
+//         ? [fromPt, ...snapPts.slice(1, -1), toPt]
+//         : [fromPt, toPt];
+//     }
+
+//     // Cuối cùng: fallback snap trực tiếp vào shape tuyến chỉ định
+//     return buildPolylineViaShapeSnap(shape, fromPt, toPt);
+//   }
+
+//   const { route, fromPos, toPos } = found;
+//   const lo = Math.min(fromPos, toPos), hi = Math.max(fromPos, toPos);
+//   const stnIds = route.s.slice(lo, hi + 1);
+//   if (fromPos > toPos) stnIds.reverse();
+
+//   // Snap từng ga vào shape → lấy đường cong thực tế
+//   const snapIdxs = stnIds.map(id => {
+//     const s = GTFS.stations.find(x => x.id === id);
+//     return s ? snapToShape(shape, [s.lat, s.lng]) : -1;
+//   }).filter(i => i >= 0);
+
+//   if (snapIdxs.length < 2) return [fromPt, toPt];
+
+//   // Kiểm tra nếu snap đang đi ngược shape → reverse
+//   const goingForward = snapIdxs[0] <= snapIdxs[snapIdxs.length - 1];
+//   if (!goingForward) snapIdxs.reverse();
+
+//   // Ghép các đoạn shape giữa các ga liên tiếp
+//   const pts = [];
+//   for (let i = 0; i < snapIdxs.length - 1; i++) {
+//     const segSlice = shape.slice(snapIdxs[i], snapIdxs[i+1] + 1);
+//     if (i === 0) pts.push(...segSlice);
+//     else pts.push(...segSlice.slice(1));
+//   }
+
+//   if (!goingForward) pts.reverse();
+
+//   // PIN tọa độ ga đầu/cuối chính xác
+//   if (pts.length >= 2) {
+//     return [fromPt, ...pts.slice(1, -1), toPt];
+//   }
+//   return [fromPt, toPt];
+// }
+
+// Alias cho backward-compat
+function buildPolylineForBackendLeg(routeId, fromName, toName) {
+  return getRouteSegment(routeId, fromName, toName) || [];
 }
 
 // ═══════════════════════════════════════════════════════
@@ -609,17 +799,36 @@ function makeTermIcon(color) {
 
 // ── Vẽ 1 leg lên layer ─────────────────────────────────
 function _drawLeg(leg, layer, active, markerLyr) {
+  if (leg.type === 'walk') {
+    let pts = (Array.isArray(leg.polyline) && leg.polyline.length >= 2) ? leg.polyline : null;
+    if (!pts) {
+      const a = stationCoord(leg.fromName), b = stationCoord(leg.toName);
+      if (a && b) pts = [a, b];
+    }
+    if (!pts || pts.length < 2) return null;
+    L.polyline(pts, {
+      color:'#8b93a8',
+      weight: active ? 4 : 2,
+      opacity: active ? .85 : .25,
+      dashArray:'6,8',
+      interactive:false, lineCap:'round'
+    }).addTo(layer);
+    return pts;
+  }
   if (leg.type !== 'board') return null;
 
-  // Ưu tiên: shape thật → polyline đã có → đường thẳng 2 ga
-  let pts = getRouteSegment(leg.routeId, leg.fromName, leg.toName)
-         || (leg.polyline?.length >= 2 ? leg.polyline : null);
-  if (!pts) {
-    const a = stationCoord(leg.fromName), b = stationCoord(leg.toName);
-    if (a && b) pts = [a, b];
+  // Dùng polyline đã build sẵn khi map journeys (từ getRouteSegment), fallback shape/thẳng
+  let pts = null;
+  if (Array.isArray(leg.polyline) && leg.polyline.length >= 2) {
+    pts = leg.polyline;
+  } else {
+    pts = getRouteSegment(leg.routeId, leg.fromName, leg.toName);
+    if (!pts) {
+      const a = stationCoord(leg.fromName), b = stationCoord(leg.toName);
+      if (a && b) pts = [a, b];
+    }
   }
-  if (!pts) return null;
-
+  if (!pts || pts.length < 2) return null;
   const c = leg.color || LINE_COLORS[leg.routeId] || '#00e5b0';
 
   if (active) {
@@ -646,6 +855,9 @@ function renderAllJourneysOnMap(activeIdx) {
   hlLayer.clearLayers();
   markerLayer.clearLayers();
   routeLayer.clearLayers();
+  // DEBUG: verify polyline at render time
+  const dbgLeg = journeys[activeIdx]?.legs?.find(l => l.type === 'board');
+  console.log('[RENDER] active journey board leg polyline len:', dbgLeg?.polyline?.length, 'isArray:', Array.isArray(dbgLeg?.polyline));
 
   const bounds = [];
 
@@ -662,10 +874,10 @@ function renderAllJourneysOnMap(activeIdx) {
       if (pts) pts.forEach(p => bounds.push(p));
     });
     // Marker điểm đến
-    const last = [...active.legs].reverse().find(l => l.type === 'board');
+    const last = active.legs.at(-1);
     if (last) {
-      const seg = getRouteSegment(last.routeId, last.fromName, last.toName);
-      const pt  = seg?.at(-1) || stationCoord(last.toName);
+      const seg = last.polyline;
+      const pt  = (Array.isArray(seg) && seg.length >= 2 ? seg.at(-1) : null) || stationCoord(last.toName);
       if (pt) {
         L.marker(pt, {icon: makeTermIcon('#5b8fff')}).addTo(markerLayer)
           .bindPopup(`<b>${last.toName}</b><br><span style="color:#8b93a8;font-family:'DM Mono',monospace">Đến ${formatTime(last.arr)}</span>`);
@@ -841,7 +1053,29 @@ function renderSteps(j) {
             <div class="step-detail">${leg.fromName} → ${leg.toName}</div>
           </div>
         </div>`;
-    }
+    } else if (leg.type === 'walk') {
+        el.innerHTML += `
+          <div class="step">
+            <div class="step-spine"><div class="step-node xfer"></div><div class="step-line"></div></div>
+            <div class="step-content">
+              <div class="step-stop">${leg.fromName}</div>
+              <div class="step-detail">${formatTime(leg.dep)}</div>
+              <div class="step-badge" style="background:rgba(255,179,64,.12);color:var(--amber)">🚶 Đi bộ đến ${leg.toName}</div>
+            </div>
+            <div class="step-time">${formatTime(leg.dep)}</div>
+          </div>
+          <div class="step">
+            <div class="step-spine">
+              <div class="step-node${isLast ? ' dest' : ''}" style="${isLast ? '' : 'border-color:var(--amber);background:rgba(255,179,64,.15)'}"></div>
+              ${isLast ? '' : `<div class="step-line"></div>`}
+            </div>
+            <div class="step-content">
+              <div class="step-stop">${leg.toName}</div>
+              <div class="step-detail">${formatTime(leg.arr)}</div>
+            </div>
+            <div class="step-time">${formatTime(leg.arr)}</div>
+          </div>`;
+      }
   });
 }
 
@@ -922,14 +1156,20 @@ async function handleSearch() {
         type:     l.type,              // "board" | "walk"
         fromName: l.from_stop,
         toName:   l.to_stop,
-        routeId:  l.route,             // ← l.route (không phải l.description)
+        routeId:  (l.route||'').toUpperCase(),
+        color:    LINE_COLORS[(l.route||'').toUpperCase()] || '#00e5b0',
         dep:      timeStrToSec(l.dep_time),   // ← giờ đúng từng leg
         arr:      timeStrToSec(l.arr_time),   // ← giờ đúng từng leg
-        polyline: [],
+        polyline: getRouteSegment((l.route||'').toUpperCase(), l.from_stop, l.to_stop) || buildPolylineForBackendLeg((l.route||'').toUpperCase(), l.from_stop, l.to_stop),
       })),
     }));
 
-    // Sắp xếp theo arrival time tăng dần (nhanh nhất lên đầu)
+    // DEBUG: log raw backend data
+    console.log("[DEBUG] RAW leg0:", JSON.stringify(journeyData[0]?.legs[0]));
+    console.log("[DEBUG] MAPPED leg0:", JSON.stringify(journeys[0]?.legs.find(l=>l.type==="board")));
+    console.log("[DEBUG] polyline len:", journeys[0]?.legs.find(l=>l.type==="board")?.polyline?.length);
+
+    // Sort journeys by arrival time
     journeys.sort((a, b) => a.arrTime - b.arrTime);
  
     // ── Hiển thị kết quả ─────────────────────────────
@@ -959,12 +1199,6 @@ async function handleSearch() {
 }
  
 // Helper: "08:30:00" → số giây
-function timeStrToSec(t) {
-  if (!t) return 0;
-  const parts = t.split(':').map(Number);
-  return parts[0] * 3600 + parts[1] * 60 + (parts[2] || 0);
-}
-
 // ═══════════════════════════════════════════════════════
 //  SWAP + DEFAULTS
 // ═══════════════════════════════════════════════════════
