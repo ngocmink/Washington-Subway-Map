@@ -71,66 +71,86 @@ class JourneyResult(BaseModel):
 def _is_time(s: str) -> bool:
     return bool(re.match(r'^\d{2}:\d{2}:\d{2}$', s.strip()))
 
-def parse_legs(path: list[str], fallback_origin: str, fallback_dep: str) -> tuple[list[LegInfo], int]:
 
+def parse_legs(path: list[str], fallback_origin: str, fallback_dep: str) -> tuple[list["LegInfo"], int]:
+    if not path or not path[0].startswith("Depart at"):
+        return [], 0
+
+    dep_time = path[0].replace("Depart at ", "").strip()
     legs: list[LegInfo] = []
-    overall_dep   = fallback_dep
-    pending_time  = None
-    current_route = None
-    current_dep   = fallback_dep
-    current_from  = fallback_origin
-    last_station  = None
-    last_arr      = None
 
-    for item in path:
+    current_station = fallback_origin
+    current_time = dep_time
+    i, n = 1, len(path)
 
-        if item.startswith("Depart at"):
-            overall_dep   = item.replace("Depart at ", "").strip()
-            last_station  = fallback_origin   
-            current_from  = fallback_origin
-            current_dep   = overall_dep
-            continue
+    def is_walk_tok(t: str) -> bool:
+        return t.startswith("Walk to") or t.startswith("Walking from")
 
-        if _is_time(item):
-            pending_time = item
-            continue
+    while i < n:
+        tok = path[i]
 
-        if item.startswith("Take route"):
-            route_name = item.replace("Take route ", "").strip()
-            if current_route is not None:
+        if tok.startswith("Take route"):
+            route_name = tok.replace("Take route ", "").strip()
+            i += 1
+
+            # token đầu (chỉ leg đầu tiên) lặp lại đúng tên ga hiện tại -> bỏ qua
+            if i < n and path[i] == current_station:
+                i += 1
+
+            arr_time = path[i] if i < n and _is_time(path[i]) else current_time
+            if i < n and _is_time(path[i]):
+                i += 1
+            to_station = path[i] if i < n else current_station
+            if i < n:
+                i += 1
+
+            legs.append(LegInfo(
+                type="board", route=route_name,
+                from_stop=current_station, to_stop=to_station,
+                dep_time=current_time, arr_time=arr_time,
+            ))
+            current_station = to_station
+            current_time = arr_time
+
+            # ngay sau khi xuống tàu nếu phải đi bộ tiếp
+            if i < n and is_walk_tok(path[i]):
+                i += 1
+                walk_arr = path[i] if i < n and _is_time(path[i]) else current_time
+                if i < n and _is_time(path[i]):
+                    i += 1
+                walk_station = path[i] if i < n else current_station
+                if i < n:
+                    i += 1
                 legs.append(LegInfo(
-                    type="board", route=current_route,
-                    from_stop=current_from, to_stop=last_station or "",
-                    dep_time=current_dep,   arr_time=last_arr or "",
+                    type="walk", route="walk",
+                    from_stop=current_station, to_stop=walk_station,
+                    dep_time=current_time, arr_time=walk_arr,
                 ))
-            current_route = route_name
-            current_dep   = pending_time or overall_dep
-            current_from  = last_station or fallback_origin
-            pending_time  = None
-            continue
+                current_station = walk_station
+                current_time = walk_arr
+            elif i < n and _is_time(path[i]):
+                # giờ khởi hành cho chặng kế tiếp sau khi đổi tuyến
+                current_time = path[i]
+                i += 1
 
-        if item.startswith("Walk to") or item.startswith("Walking from"):
-            dest = item.replace("Walk to ", "").replace("Walking from ", "").strip()
+        elif is_walk_tok(tok):
+            i += 1
+            walk_arr = path[i] if i < n and _is_time(path[i]) else current_time
+            if i < n and _is_time(path[i]):
+                i += 1
+            walk_station = path[i] if i < n else current_station
+            if i < n:
+                i += 1
             legs.append(LegInfo(
                 type="walk", route="walk",
-                from_stop=last_station or "", to_stop=dest,
-                dep_time=pending_time or "", arr_time=pending_time or "",
+                from_stop=current_station, to_stop=walk_station,
+                dep_time=current_time, arr_time=walk_arr,
             ))
-            pending_time = None
-            continue
+            current_station = walk_station
+            current_time = walk_arr
 
-        # Tên ga thật
-        last_station = item
-        last_arr     = pending_time
-        pending_time = None
-
-    # Đóng leg cuối
-    if current_route is not None:
-        legs.append(LegInfo(
-            type="board", route=current_route,
-            from_stop=current_from, to_stop=last_station or "",
-            dep_time=current_dep,   arr_time=last_arr or "",
-        ))
+        else:
+            i += 1  # token thừa (thời gian/tên ga lặp) -> bỏ qua
 
     transfers = max(0, len([l for l in legs if l.type == "board"]) - 1)
     return legs, transfers
